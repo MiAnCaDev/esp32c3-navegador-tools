@@ -82,7 +82,6 @@ enum ManeuverType {
 #define ICON_HEAD_LEN 26   // largo de la punta
 #define ICON_HEAD_HALF 19  // media anchura de la base de la punta
 #define ICON_MAXPTS   48
-#define SUN_ICON_SIZE 24   // icono de sol del boton de brillo
 
 struct IconPath {
   float x[ICON_MAXPTS];
@@ -234,6 +233,10 @@ lv_obj_t *speedLabel    = nullptr;
 lv_obj_t *batteryLabel  = nullptr;
 lv_obj_t *dimOverlay    = nullptr;
 lv_obj_t *brightBtn     = nullptr;
+lv_obj_t *appBtn        = nullptr;   // boton superior izquierdo (cambia de "app")
+lv_obj_t *appModeLabel  = nullptr;   // texto "Proximamente" del modo app
+bool      appMode       = false;     // false = navegacion, true = otras apps (BLE apagado)
+volatile bool pendingAppToggle = false;
 lv_obj_t *toastLabel    = nullptr;
 lv_timer_t *toastTimer  = nullptr;
 
@@ -574,8 +577,8 @@ void refreshInstrLabel()
 
 void refreshSpeedLabel()
 {
-  // Si la app no manda velocidad, el campo se oculta del todo.
-  if (speedKmh < 0) {
+  // Si la app no manda velocidad (o estamos en modo app), el campo se oculta.
+  if (speedKmh < 0 || appMode) {
     lv_obj_add_flag(speedLabel, LV_OBJ_FLAG_HIDDEN);
     return;
   }
@@ -587,7 +590,7 @@ void refreshSpeedLabel()
 
 void refreshBatteryLabel()
 {
-  if (batteryPct < 0) {
+  if (batteryPct < 0 || appMode) {
     lv_obj_add_flag(batteryLabel, LV_OBJ_FLAG_HIDDEN);
   } else {
     char buf[8];
@@ -712,6 +715,85 @@ void brightBtnEventCb(lv_event_t *e)
 }
 
 // ===========================================================================
+// BOTONES TRANSPARENTES CON ICONO (sin recuadro de color)
+// ===========================================================================
+#define ICON_BOX 24
+
+// Sol: disco central + 8 rayos (lineas LVGL, fondo transparente)
+static void buildSunIcon(lv_obj_t *box)
+{
+  static lv_point_t rays[8][2];
+  const float c = ICON_BOX / 2.0f;
+  for (int i = 0; i < 8; i++) {
+    float a = i * (float)M_PI / 4.0f;
+    rays[i][0].x = (lv_coord_t)lroundf(c + 7.0f  * cosf(a));
+    rays[i][0].y = (lv_coord_t)lroundf(c + 7.0f  * sinf(a));
+    rays[i][1].x = (lv_coord_t)lroundf(c + 10.5f * cosf(a));
+    rays[i][1].y = (lv_coord_t)lroundf(c + 10.5f * sinf(a));
+    lv_obj_t *ln = lv_line_create(box);
+    lv_line_set_points(ln, rays[i], 2);
+    lv_obj_set_style_line_width(ln, 2, 0);
+    lv_obj_set_style_line_color(ln, lv_color_white(), 0);
+    lv_obj_set_style_line_rounded(ln, true, 0);
+    lv_obj_set_pos(ln, 0, 0);
+    lv_obj_clear_flag(ln, LV_OBJ_FLAG_CLICKABLE);
+  }
+  lv_obj_t *disc = lv_obj_create(box);
+  lv_obj_remove_style_all(disc);
+  lv_obj_set_size(disc, 9, 9);
+  lv_obj_set_style_radius(disc, LV_RADIUS_CIRCLE, 0);
+  lv_obj_set_style_bg_color(disc, lv_color_white(), 0);
+  lv_obj_set_style_bg_opa(disc, LV_OPA_COVER, 0);
+  lv_obj_center(disc);
+  lv_obj_clear_flag(disc, LV_OBJ_FLAG_CLICKABLE);
+}
+
+// Icono de "apps": cuadricula 2x2
+static void buildGridIcon(lv_obj_t *box)
+{
+  for (int r = 0; r < 2; r++) {
+    for (int q = 0; q < 2; q++) {
+      lv_obj_t *sq = lv_obj_create(box);
+      lv_obj_remove_style_all(sq);
+      lv_obj_set_size(sq, 9, 9);
+      lv_obj_set_pos(sq, 2 + q * 11, 2 + r * 11);
+      lv_obj_set_style_radius(sq, 2, 0);
+      lv_obj_set_style_bg_color(sq, lv_color_white(), 0);
+      lv_obj_set_style_bg_opa(sq, LV_OPA_COVER, 0);
+      lv_obj_clear_flag(sq, LV_OBJ_FLAG_CLICKABLE);
+    }
+  }
+}
+
+// Boton pulsable sin ningun fondo/borde/sombra; solo se ve el icono.
+static lv_obj_t *makeIconButton(lv_obj_t *parent, lv_align_t align, int x, int y,
+                                lv_event_cb_t cb, void (*buildIcon)(lv_obj_t *))
+{
+  lv_obj_t *btn = lv_obj_create(parent);
+  lv_obj_remove_style_all(btn);                 // sin fondo, borde ni sombra
+  lv_obj_set_size(btn, 52, 44);                 // zona tactil comoda
+  lv_obj_align(btn, align, x, y);
+  lv_obj_clear_flag(btn, LV_OBJ_FLAG_SCROLLABLE);
+  lv_obj_add_flag(btn, LV_OBJ_FLAG_CLICKABLE);
+  lv_obj_add_event_cb(btn, cb, LV_EVENT_CLICKED, nullptr);
+
+  lv_obj_t *box = lv_obj_create(btn);
+  lv_obj_remove_style_all(box);
+  lv_obj_set_size(box, ICON_BOX, ICON_BOX);
+  lv_obj_center(box);
+  lv_obj_clear_flag(box, LV_OBJ_FLAG_CLICKABLE);
+  lv_obj_clear_flag(box, LV_OBJ_FLAG_SCROLLABLE);
+  buildIcon(box);
+  return btn;
+}
+
+void appBtnEventCb(lv_event_t *e)
+{
+  if (lv_event_get_code(e) != LV_EVENT_CLICKED) return;
+  pendingAppToggle = true;   // se procesa en loop()
+}
+
+// ===========================================================================
 // CONSTRUCCION DE LA INTERFAZ
 // ===========================================================================
 void buildUI()
@@ -723,7 +805,7 @@ void buildUI()
   batteryLabel = lv_label_create(scr);
   lv_obj_set_style_text_color(batteryLabel, lv_color_white(), 0);
   lv_obj_set_style_text_font(batteryLabel, &lv_font_montserrat_14, 0);
-  lv_obj_align(batteryLabel, LV_ALIGN_TOP_LEFT, 6, 4);
+  lv_obj_align(batteryLabel, LV_ALIGN_TOP_RIGHT, -6, 4);
   lv_label_set_text(batteryLabel, "");
   lv_obj_add_flag(batteryLabel, LV_OBJ_FLAG_HIDDEN);
 
@@ -758,44 +840,17 @@ void buildUI()
   lv_label_set_text(speedLabel, "");
   lv_obj_add_flag(speedLabel, LV_OBJ_FLAG_HIDDEN); // oculto hasta que llegue velocidad
 
-  // --- Boton de brillo (abajo a la izquierda) ---
-  brightBtn = lv_btn_create(scr);
-  lv_obj_set_size(brightBtn, 46, 30);
-  lv_obj_align(brightBtn, LV_ALIGN_BOTTOM_LEFT, 4, -4);
-  lv_obj_set_style_bg_color(brightBtn, lv_palette_darken(LV_PALETTE_GREY, 3), 0);
-  lv_obj_set_style_bg_opa(brightBtn, LV_OPA_60, 0);
-  lv_obj_add_event_cb(brightBtn, brightBtnEventCb, LV_EVENT_CLICKED, nullptr);
-  // Icono de sol dibujado a mano (LVGL no trae simbolo de sol/bombilla)
-  static lv_color_t sunBuf[SUN_ICON_SIZE * SUN_ICON_SIZE];
-  lv_obj_t *sunCanvas = lv_canvas_create(brightBtn);
-  lv_canvas_set_buffer(sunCanvas, sunBuf, SUN_ICON_SIZE, SUN_ICON_SIZE, LV_IMG_CF_TRUE_COLOR);
-  lv_obj_clear_flag(sunCanvas, LV_OBJ_FLAG_CLICKABLE);
-  lv_obj_center(sunCanvas);
-  lv_canvas_fill_bg(sunCanvas, lv_color_black(), LV_OPA_TRANSP);
-  {
-    const int c = SUN_ICON_SIZE / 2;
-    lv_draw_rect_dsc_t rd;
-    lv_draw_rect_dsc_init(&rd);
-    rd.bg_color = lv_color_white();
-    rd.bg_opa   = LV_OPA_COVER;
-    rd.radius   = LV_RADIUS_CIRCLE;
-    lv_canvas_draw_rect(sunCanvas, c - 4, c - 4, 9, 9, &rd);   // disco central
+  // --- Botones fijos (siempre visibles, sin fondo): app (arriba izq.) y brillo (abajo izq.) ---
+  appBtn = makeIconButton(scr, LV_ALIGN_TOP_LEFT, 2, 2, appBtnEventCb, buildGridIcon);
+  brightBtn = makeIconButton(scr, LV_ALIGN_BOTTOM_LEFT, 2, -2, brightBtnEventCb, buildSunIcon);
 
-    lv_draw_line_dsc_t ld;
-    lv_draw_line_dsc_init(&ld);
-    ld.color = lv_color_white();
-    ld.width = 2;
-    ld.round_start = true;
-    ld.round_end   = true;
-    for (int i = 0; i < 8; i++) {                               // 8 rayos
-      float a = i * (float)M_PI / 4.0f;
-      lv_point_t ray[2] = {
-        { (lv_coord_t)lroundf(c + 7.0f  * cosf(a)), (lv_coord_t)lroundf(c + 7.0f  * sinf(a)) },
-        { (lv_coord_t)lroundf(c + 10.0f * cosf(a)), (lv_coord_t)lroundf(c + 10.0f * sinf(a)) }
-      };
-      lv_canvas_draw_line(sunCanvas, ray, 2, &ld);
-    }
-  }
+  // --- Texto del modo app (oculto por defecto) ---
+  appModeLabel = lv_label_create(scr);
+  lv_obj_set_style_text_color(appModeLabel, lv_color_white(), 0);
+  lv_obj_set_style_text_font(appModeLabel, &lv_font_montserrat_24, 0);
+  lv_obj_align(appModeLabel, LV_ALIGN_CENTER, 0, 0);
+  lv_label_set_text(appModeLabel, "Proximamente");
+  lv_obj_add_flag(appModeLabel, LV_OBJ_FLAG_HIDDEN);
 
   // --- Toast (mensaje temporal, oculto por defecto) ---
   toastLabel = lv_label_create(scr);
@@ -1049,6 +1104,62 @@ void setupBLE()
 }
 
 // ===========================================================================
+// CAMBIO DE "APP" (boton superior izquierdo)
+//   Navegacion  -> BLE activo, se ve flecha/distancia/calle/velocidad
+//   Otras apps  -> BLE apagado, se oculta todo lo de navegacion
+// ===========================================================================
+void setNavWidgetsVisible(bool visible)
+{
+  lv_obj_t *w[] = { arrowCanvas, distanceLabel, instrLabel };
+  for (lv_obj_t *o : w) {
+    if (visible) lv_obj_clear_flag(o, LV_OBJ_FLAG_HIDDEN);
+    else         lv_obj_add_flag(o, LV_OBJ_FLAG_HIDDEN);
+  }
+}
+
+void toggleAppMode()
+{
+  appMode = !appMode;
+
+  if (appMode) {
+#if ENABLE_BLE
+    // Apagar Bluetooth de verdad
+    BLEDevice::getAdvertising()->stop();
+    BLEDevice::deinit(false);
+    bleServer = nullptr; charRX = nullptr; charTX = nullptr;
+    bleClientConnected = false;
+    if (xSemaphoreTake(rxMutex, portMAX_DELAY)) {
+      rxBuffer = ""; bleDataPending = false;
+      xSemaphoreGive(rxMutex);
+    }
+#endif
+    pendingProximityAlert = false;
+    pendingCloseAlert = false;
+    setNavWidgetsVisible(false);
+    refreshSpeedLabel();
+    refreshBatteryLabel();
+    lv_obj_clear_flag(appModeLabel, LV_OBJ_FLAG_HIDDEN);
+    showToast("Bluetooth apagado");
+  } else {
+    lv_obj_add_flag(appModeLabel, LV_OBJ_FLAG_HIDDEN);
+    navActive = false;
+    navInstr = ""; navAction = ""; navDistanceM = -1;
+    lastInstrKey = "";
+    speedKmh = -1;
+    setNavWidgetsVisible(true);
+    refreshDistanceLabel();
+    refreshInstrLabel();
+    refreshSpeedLabel();
+    refreshBatteryLabel();
+    updateArrow();
+#if ENABLE_BLE
+    setupBLE();
+#endif
+    showToast("Bluetooth activado");
+  }
+}
+
+// ===========================================================================
 // SETUP / LOOP
 // ===========================================================================
 void setup()
@@ -1122,6 +1233,11 @@ void loop()
 {
   lv_timer_handler();
   delay(5);
+
+  if (pendingAppToggle) {
+    pendingAppToggle = false;
+    toggleAppMode();
+  }
 
   String localBuffer = "";
 
