@@ -74,7 +74,8 @@ enum ManeuverType {
   MNV_SLIGHT_RIGHT, MNV_RIGHT, MNV_SHARP_RIGHT,
   MNV_SLIGHT_LEFT,  MNV_LEFT,  MNV_SHARP_LEFT,
   MNV_UTURN_RIGHT,  MNV_UTURN_LEFT,
-  MNV_ROUNDABOUT_RIGHT, MNV_ROUNDABOUT_LEFT, MNV_ROUNDABOUT_STRAIGHT
+  MNV_KEEP_RIGHT,   MNV_KEEP_LEFT,
+  MNV_ROUNDABOUT_RIGHT, MNV_ROUNDABOUT_LEFT, MNV_ROUNDABOUT_STRAIGHT, MNV_ROUNDABOUT_UTURN
 };
 
 // Tipos/constantes de los iconos de flecha (aqui por el mismo motivo de arriba).
@@ -82,6 +83,11 @@ enum ManeuverType {
 #define ICON_HEAD_LEN 26   // largo de la punta
 #define ICON_HEAD_HALF 19  // media anchura de la base de la punta
 #define ICON_MAXPTS   48
+// Metros que se pueden recorrer con un keep_left/keep_right justo despues de una
+// rotonda antes de considerar que es una bifurcacion real. Por debajo de este
+// valor se sigue mostrando el icono de la rotonda; por encima, el de keep.
+#define KEEP_AFTER_ROUNDABOUT_MAX_M 200
+#define DRIVE_ON_RIGHT 1   // 1 = conduccion por la derecha (rotondas en sentido antihorario). 0 = por la izquierda
 
 struct IconPath {
   float x[ICON_MAXPTS];
@@ -396,52 +402,12 @@ static void drawManeuverIcon(float straightLen, float sweepDeg, float r, float e
   drawIconPath(p, !toRight, color);
 }
 
-// Rotonda: anillo fino + entrada desde abajo + flecha de salida.
-// exitAngle: rumbo de salida (0 = recto, + derecha, - izquierda).
-static void drawRoundaboutIcon(float exitAngle, lv_color_t color)
+// Punta de flecha triangular en (bx,by), rumbo headingDeg (0=arriba, +=derecha).
+static void drawArrowHead(float bx, float by, float headingDeg, float hl, float hh, lv_color_t color)
 {
-  const float c = ARROW_CANVAS_SIZE / 2.0f;
-  const float ringR = 24.0f;
-  const float ringCx = c, ringCy = c - 14.0f;
-
-  lv_draw_line_dsc_t ring;
-  lv_draw_line_dsc_init(&ring);
-  ring.color = color;
-  ring.width = 5;
-  ring.round_start = true;
-  ring.round_end   = true;
-  lv_point_t rp[33];
-  for (int i = 0; i <= 32; i++) {
-    float a = (float)i * 2.0f * (float)M_PI / 32.0f;
-    rp[i].x = (lv_coord_t)lroundf(ringCx + ringR * cosf(a));
-    rp[i].y = (lv_coord_t)lroundf(ringCy + ringR * sinf(a));
-  }
-  lv_canvas_draw_line(arrowCanvas, rp, 33, &ring);
-
-  // Entrada desde abajo
-  lv_draw_line_dsc_t st;
-  lv_draw_line_dsc_init(&st);
-  st.color = color;
-  st.width = ICON_STROKE - 3;
-  st.round_start = true;
-  st.round_end   = true;
-  lv_point_t entry[2] = {
-    { (lv_coord_t)lroundf(ringCx), (lv_coord_t)(ARROW_CANVAS_SIZE - 10) },
-    { (lv_coord_t)lroundf(ringCx), (lv_coord_t)lroundf(ringCy + ringR) }
-  };
-  lv_canvas_draw_line(arrowCanvas, entry, 2, &st);
-
-  // Salida: sale del anillo en la direccion "exitAngle"
-  float er = exitAngle * (float)M_PI / 180.0f;
-  float dx = sinf(er), dy = -cosf(er);
-  float sx = ringCx + dx * ringR, sy = ringCy + dy * ringR;   // punto en el anillo
-  float bx = sx + dx * 12.0f,     by = sy + dy * 12.0f;       // base de la punta
-  lv_point_t ex[2] = { { (lv_coord_t)lroundf(sx), (lv_coord_t)lroundf(sy) },
-                       { (lv_coord_t)lroundf(bx), (lv_coord_t)lroundf(by) } };
-  lv_canvas_draw_line(arrowCanvas, ex, 2, &st);
-
-  const float hl = 20.0f, hh = 14.0f;
-  float px = cosf(er), py = sinf(er);
+  float r  = headingDeg * (float)M_PI / 180.0f;
+  float dx = sinf(r), dy = -cosf(r);
+  float px = cosf(r), py = sinf(r);
   lv_point_t head[3] = {
     { (lv_coord_t)lroundf(bx + dx * hl), (lv_coord_t)lroundf(by + dy * hl) },
     { (lv_coord_t)lroundf(bx - px * hh), (lv_coord_t)lroundf(by - py * hh) },
@@ -452,6 +418,205 @@ static void drawRoundaboutIcon(float exitAngle, lv_color_t color)
   rdsc.bg_color = color;
   rdsc.bg_opa   = LV_OPA_COVER;
   lv_canvas_draw_polygon(arrowCanvas, head, 3, &rdsc);
+}
+
+// Rotonda: anillo tenue + salidas tenues + RECORRIDO resaltado.
+// Se entra por abajo y se dibuja en blanco solo el tramo del anillo que hay
+// que recorrer hasta la salida (sentido antihorario si DRIVE_ON_RIGHT).
+// Asi se ve de un vistazo si es una salida corta (derecha), media (recto)
+// o larga (izquierda, casi toda la vuelta).
+// exitAngle: rumbo de salida respecto a la entrada (0 = recto, +90 dcha, -90 izda).
+static void drawRoundaboutIcon(float exitAngle, lv_color_t color)
+{
+  const float cx = ARROW_CANVAS_SIZE / 2.0f;
+  const float cy = 58.0f;
+  const float R  = 22.0f;
+  const lv_color_t dim = lv_color_hex(0x4A4A4A);
+
+  // Punto del anillo (o de un radio mayor) en el angulo th (0=arriba, +=derecha)
+  auto ringPt = [&](float th, float rad) -> lv_point_t {
+    float t = th * (float)M_PI / 180.0f;
+    lv_point_t q;
+    q.x = (lv_coord_t)lroundf(cx + rad * sinf(t));
+    q.y = (lv_coord_t)lroundf(cy - rad * cosf(t));
+    return q;
+  };
+
+  lv_draw_line_dsc_t thin;
+  lv_draw_line_dsc_init(&thin);
+  thin.color = dim;
+  thin.width = 5;
+  thin.round_start = true;
+  thin.round_end   = true;
+
+  lv_draw_line_dsc_t bold;
+  lv_draw_line_dsc_init(&bold);
+  bold.color = color;
+  bold.width = ICON_STROKE - 3;
+  bold.round_start = true;
+  bold.round_end   = true;
+
+  // 1) Salidas no usadas (muescas tenues)
+  const float exits[3] = { -90.0f, 0.0f, 90.0f };
+  for (int i = 0; i < 3; i++) {
+    if (fabsf(exits[i] - exitAngle) < 1.0f) continue;
+    lv_point_t st[2] = { ringPt(exits[i], R), ringPt(exits[i], R + 16.0f) };
+    lv_canvas_draw_line(arrowCanvas, st, 2, &thin);
+  }
+
+  // 2) Anillo completo tenue
+  lv_point_t rp[33];
+  for (int i = 0; i <= 32; i++) rp[i] = ringPt(i * 360.0f / 32.0f, R);
+  lv_canvas_draw_line(arrowCanvas, rp, 33, &thin);
+
+  // 3) Entrada desde abajo (resaltada)
+  lv_point_t entry[2] = {
+    { (lv_coord_t)lroundf(cx), (lv_coord_t)(ARROW_CANVAS_SIZE - 6) },
+    ringPt(180.0f, R)
+  };
+  lv_canvas_draw_line(arrowCanvas, entry, 2, &bold);
+
+  // 4) Recorrido dentro del anillo: desde la entrada (180) hasta la salida
+  const bool  ccw = (DRIVE_ON_RIGHT != 0);
+  float sweep = ccw ? fmodf(180.0f - exitAngle + 360.0f, 360.0f)
+                    : fmodf(exitAngle - 180.0f + 360.0f, 360.0f);
+  if (sweep < 1.0f) sweep = 360.0f;
+  int steps = (int)(sweep / 10.0f) + 1;
+  if (steps > 38) steps = 38;
+  lv_point_t arc[40];
+  for (int i = 0; i <= steps; i++) {
+    float th = 180.0f + (ccw ? -1.0f : 1.0f) * sweep * (float)i / (float)steps;
+    arc[i] = ringPt(th, R);
+  }
+  lv_canvas_draw_line(arrowCanvas, arc, steps + 1, &bold);
+
+  // 5) Tramo de salida + punta de flecha
+  lv_point_t p0 = ringPt(exitAngle, R);
+  lv_point_t p1 = ringPt(exitAngle, R + 10.0f);
+  lv_point_t ex[2] = { p0, p1 };
+  lv_canvas_draw_line(arrowCanvas, ex, 2, &bold);
+  drawArrowHead((float)p1.x, (float)p1.y, exitAngle, 18.0f, 13.0f, color);
+
+  // 6) Numero de salida en el centro, calculado por el angulo recorrido
+  //    (cada 90 grados de recorrido desde la entrada = una salida: 90->1, 180->2, 270->3).
+  int exitNum = (int)lroundf(sweep / 90.0f);
+  if (exitNum < 1) exitNum = 1;
+  char num[4];
+  snprintf(num, sizeof(num), "%d", exitNum);
+  lv_draw_label_dsc_t ldsc;
+  lv_draw_label_dsc_init(&ldsc);
+  ldsc.color = color;
+  ldsc.font  = &lv_font_montserrat_24;
+  ldsc.align = LV_TEXT_ALIGN_CENTER;
+  lv_canvas_draw_text(arrowCanvas, (lv_coord_t)lroundf(cx) - 20, (lv_coord_t)lroundf(cy) - 14, 40, &ldsc, num);
+}
+
+// Rotonda con cambio de sentido: se da la vuelta completa al anillo y se sale
+// por donde se entro (entrada y salida paralelas, una a cada lado del eje).
+static void drawRoundaboutUturnIcon(lv_color_t color)
+{
+  const float cx = ARROW_CANVAS_SIZE / 2.0f;
+  const float cy = 58.0f;
+  const float R  = 22.0f;
+  const float off = 12.0f;                       // separacion lateral entrada/salida
+  const lv_color_t dim = lv_color_hex(0x4A4A4A);
+  const bool ccw = (DRIVE_ON_RIGHT != 0);
+  const float s = ccw ? 1.0f : -1.0f;            // lado de la entrada (dcha si se conduce por la dcha)
+  const float dth = asinf(off / R) * 180.0f / (float)M_PI;   // desfase angular de los tramos
+
+  auto ringPt = [&](float th, float rad) -> lv_point_t {
+    float t = th * (float)M_PI / 180.0f;
+    lv_point_t q;
+    q.x = (lv_coord_t)lroundf(cx + rad * sinf(t));
+    q.y = (lv_coord_t)lroundf(cy - rad * cosf(t));
+    return q;
+  };
+
+  lv_draw_line_dsc_t thin;
+  lv_draw_line_dsc_init(&thin);
+  thin.color = dim; thin.width = 5; thin.round_start = true; thin.round_end = true;
+
+  lv_draw_line_dsc_t bold;
+  lv_draw_line_dsc_init(&bold);
+  bold.color = color; bold.width = ICON_STROKE - 3; bold.round_start = true; bold.round_end = true;
+
+  // 1) Salidas no usadas (tenues)
+  const float exits[3] = { -90.0f, 0.0f, 90.0f };
+  for (int i = 0; i < 3; i++) {
+    lv_point_t st[2] = { ringPt(exits[i], R), ringPt(exits[i], R + 16.0f) };
+    lv_canvas_draw_line(arrowCanvas, st, 2, &thin);
+  }
+
+  // 2) Anillo tenue
+  lv_point_t rp[33];
+  for (int i = 0; i <= 32; i++) rp[i] = ringPt(i * 360.0f / 32.0f, R);
+  lv_canvas_draw_line(arrowCanvas, rp, 33, &thin);
+
+  // 3) Recorrido resaltado: casi toda la vuelta
+  float thIn  = 180.0f - s * dth;                // punto de entrada en el anillo
+  float sweep = 360.0f - 2.0f * dth;
+  int steps = (int)(sweep / 10.0f) + 1;
+  if (steps > 38) steps = 38;
+  lv_point_t arc[40];
+  for (int i = 0; i <= steps; i++) {
+    float th = thIn + (ccw ? -1.0f : 1.0f) * sweep * (float)i / (float)steps;
+    arc[i] = ringPt(th, R);
+  }
+  lv_canvas_draw_line(arrowCanvas, arc, steps + 1, &bold);
+
+  // 4) Entrada (sube por un lado)
+  lv_point_t pin = ringPt(thIn, R);
+  lv_point_t entry[2] = { { (lv_coord_t)lroundf(cx + s * off), (lv_coord_t)(ARROW_CANVAS_SIZE - 6) }, pin };
+  lv_canvas_draw_line(arrowCanvas, entry, 2, &bold);
+
+  // 5) Salida (baja por el otro lado) con la punta hacia abajo
+  lv_point_t pout = ringPt(180.0f + s * dth, R);
+  float baseY = (float)ARROW_CANVAS_SIZE - 34.0f;
+  lv_point_t ex[2] = { pout, { (lv_coord_t)lroundf(cx - s * off), (lv_coord_t)lroundf(baseY) } };
+  lv_canvas_draw_line(arrowCanvas, ex, 2, &bold);
+  drawArrowHead(cx - s * off, baseY, 180.0f, 18.0f, 12.0f, color);
+}
+
+// "Mantente a la izquierda/derecha": bifurcacion en Y. La rama que hay que
+// tomar va en blanco con flecha; la otra, tenue.
+static void drawKeepIcon(bool toRight, lv_color_t color)
+{
+  const float cx = ARROW_CANVAS_SIZE / 2.0f;
+  const float forkY = 80.0f;
+  const float len = 46.0f;
+  const float ang = 30.0f;
+  const float s = toRight ? 1.0f : -1.0f;
+  const lv_color_t dim = lv_color_hex(0x4A4A4A);
+
+  float rad = ang * (float)M_PI / 180.0f;
+  float ex = len * sinf(rad), ey = len * cosf(rad);
+
+  lv_draw_line_dsc_t thin;
+  lv_draw_line_dsc_init(&thin);
+  thin.color = dim;
+  thin.width = ICON_STROKE - 3;
+  thin.round_start = true;
+  thin.round_end   = true;
+
+  lv_draw_line_dsc_t bold = thin;
+  bold.color = color;
+  bold.width = ICON_STROKE;
+
+  // Rama NO tomada (tenue)
+  lv_point_t other[2] = {
+    { (lv_coord_t)lroundf(cx), (lv_coord_t)lroundf(forkY) },
+    { (lv_coord_t)lroundf(cx - s * ex), (lv_coord_t)lroundf(forkY - ey) }
+  };
+  lv_canvas_draw_line(arrowCanvas, other, 2, &thin);
+
+  // Tronco + rama tomada (resaltados)
+  lv_point_t taken[3] = {
+    { (lv_coord_t)lroundf(cx), (lv_coord_t)(ARROW_CANVAS_SIZE - 6) },
+    { (lv_coord_t)lroundf(cx), (lv_coord_t)lroundf(forkY) },
+    { (lv_coord_t)lroundf(cx + s * ex), (lv_coord_t)lroundf(forkY - ey) }
+  };
+  lv_canvas_draw_line(arrowCanvas, taken, 3, &bold);
+  drawArrowHead(cx + s * ex, forkY - ey, s * ang, 22.0f, 16.0f, color);
 }
 
 // ---------------------------------------------------------------------------
@@ -474,6 +639,8 @@ ManeuverType classifyManeuver(const String &actionIn)
   bool left  = a.indexOf("left")  >= 0;
 
   if (a.indexOf("roundabout") >= 0 || a.indexOf("rotary") >= 0) {
+    if (a.indexOf("uturn") >= 0 || a.indexOf("u-turn") >= 0 || a.indexOf("u_turn") >= 0)
+      return MNV_ROUNDABOUT_UTURN;
     if (right) return MNV_ROUNDABOUT_RIGHT;
     if (left)  return MNV_ROUNDABOUT_LEFT;
     return MNV_ROUNDABOUT_STRAIGHT;
@@ -481,6 +648,11 @@ ManeuverType classifyManeuver(const String &actionIn)
 
   if (a.indexOf("uturn") >= 0 || a.indexOf("u-turn") >= 0 || a.indexOf("u_turn") >= 0) {
     return left ? MNV_UTURN_LEFT : MNV_UTURN_RIGHT; // por defecto, a la derecha
+  }
+
+  if (a.indexOf("keep") >= 0) {
+    if (right) return MNV_KEEP_RIGHT;
+    if (left)  return MNV_KEEP_LEFT;
   }
 
   if (right) {
@@ -505,11 +677,29 @@ ManeuverType classifyManeuver(const String &actionIn)
   return MNV_STRAIGHT;
 }
 
+// Estado para decidir si un keep_left/keep_right pertenece a una rotonda.
+//  - lastNonKeepMnv: ultima maniobra que NO era keep_*.
+//  - inKeepSeq: estamos en una racha de paquetes keep_* consecutivos.
+//  - keepStartDist / keepPrevDist: distancia (m) al inicio de la racha y en el
+//    paquete anterior, para medir cuanto se ha recorrido con keep_*.
+static ManeuverType lastNonKeepMnv = MNV_STRAIGHT;
+static bool inKeepSeq      = false;
+static int  keepStartDist  = -1;
+static int  keepPrevDist   = -1;
+
+static bool isRoundaboutMnv(ManeuverType m)
+{
+  return m == MNV_ROUNDABOUT_RIGHT || m == MNV_ROUNDABOUT_LEFT ||
+         m == MNV_ROUNDABOUT_STRAIGHT || m == MNV_ROUNDABOUT_UTURN;
+}
+
 void updateArrow()
 {
   lv_canvas_fill_bg(arrowCanvas, lv_color_black(), LV_OPA_TRANSP);
 
   if (!navActive) {
+    lastNonKeepMnv = MNV_STRAIGHT; // ruta terminada: olvidar la maniobra anterior
+    inKeepSeq = false;
     // Sin ruta activa: un guion horizontal como icono neutro.
     lv_point_t pts[4] = {
       { 30, ARROW_CANVAS_SIZE/2 - 8 }, { ARROW_CANVAS_SIZE-30, ARROW_CANVAS_SIZE/2 - 8 },
@@ -526,6 +716,28 @@ void updateArrow()
   lv_color_t col = lv_color_white();
   ManeuverType m = classifyManeuver(navAction);
 
+  // keep_left/keep_right justo despues de una rotonda: se mantiene el icono
+  // de la rotonda mientras se hayan recorrido menos de KEEP_AFTER_ROUNDABOUT_MAX_M
+  // metros con keep_*. Pasado ese limite se dibuja la bifurcacion.
+  if (m == MNV_KEEP_LEFT || m == MNV_KEEP_RIGHT) {
+    if (!inKeepSeq) {                       // primer keep_* de la racha
+      inKeepSeq     = true;
+      keepStartDist = navDistanceM;
+      keepPrevDist  = navDistanceM;
+    } else if (navDistanceM > keepPrevDist + 20) {
+      keepStartDist = navDistanceM;         // la distancia crece: es otra maniobra
+    }
+    keepPrevDist = navDistanceM;
+
+    int traveled = (keepStartDist >= 0 && navDistanceM >= 0) ? (keepStartDist - navDistanceM) : 0;
+    if (isRoundaboutMnv(lastNonKeepMnv) && traveled < KEEP_AFTER_ROUNDABOUT_MAX_M) {
+      m = lastNonKeepMnv;
+    }
+  } else {
+    inKeepSeq      = false;
+    lastNonKeepMnv = m;
+  }
+
   switch (m) {
     //                        recto  giro  radio  final  derecha
     case MNV_STRAIGHT:        drawManeuverIcon(64,   0,   0,   0, true,  col); break;
@@ -537,9 +749,12 @@ void updateArrow()
     case MNV_SHARP_LEFT:      drawManeuverIcon(34, 135,  22,   8, false, col); break;
     case MNV_UTURN_RIGHT:     drawManeuverIcon(44, 180,  18,   6, true,  col); break;
     case MNV_UTURN_LEFT:      drawManeuverIcon(44, 180,  18,   6, false, col); break;
-    case MNV_ROUNDABOUT_RIGHT:    drawRoundaboutIcon(  75, col); break;
-    case MNV_ROUNDABOUT_LEFT:     drawRoundaboutIcon( -75, col); break;
+    case MNV_KEEP_RIGHT:      drawKeepIcon(true,  col); break;
+    case MNV_KEEP_LEFT:       drawKeepIcon(false, col); break;
+    case MNV_ROUNDABOUT_RIGHT:    drawRoundaboutIcon(  90, col); break;
+    case MNV_ROUNDABOUT_LEFT:     drawRoundaboutIcon( -90, col); break;
     case MNV_ROUNDABOUT_STRAIGHT: drawRoundaboutIcon(   0, col); break;
+    case MNV_ROUNDABOUT_UTURN:    drawRoundaboutUturnIcon(col);  break;
   }
 }
 
