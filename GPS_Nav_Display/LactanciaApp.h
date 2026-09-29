@@ -25,11 +25,17 @@
 #include <ArduinoJson.h>
 
 // ------------------------- CONFIGURACION -----------------------------------
-#define WIFI_SSID  "TU_WIFI"
-#define WIFI_PASS  "TU_CLAVE"
+// Redes WiFi, en orden de preferencia: { "NOMBRE_RED", "CONTRASEÑA" }
+// (solo 2,4 GHz). Para una red abierta deja la clave vacía: { "Cafeteria", "" }
+struct WifiCred { const char *ssid; const char *pass; };
+static const WifiCred WIFI_LIST[] = {
+  { "TU_WIFI", "TU_CLAVE" },
+  { "OtraRed",            "otraClave"    },
+  { "MovilMiki",          "claveMovil"   },
+};
 #define API_BASE   "https://control-panel.legioagro.com/app_bebe/lactancia/api/esp32.php"
-#define API_TOKEN  "CAMBIA_ESTE_TOKEN"   // el mismo que valida verificarAutenticacion()
-#define POLL_MS    20000                 // cada cuanto se consulta el estado en reposo
+#define API_TOKEN  "e21a521a09cbb0cd95095c9esp32xxx"   // el mismo que valida verificarAutenticacion()
+#define POLL_MS    60000                 // cada cuanto se consulta el estado en reposo
 // ---------------------------------------------------------------------------
 
 void showToast(const char *text);   // definida en el .ino
@@ -164,6 +170,59 @@ static const char *cmdBody(CmdType c)
   return "";
 }
 
+
+// ------------------- REDES WIFI (lista WIFI_LIST de arriba) ----------------
+#define MAX_WIFIS      6
+#define WIFI_TRY_MS    8000     // tiempo maximo por red antes de pasar a la siguiente
+
+struct WifiNet { char ssid[33]; char pass[65]; };
+static WifiNet wifiNets[MAX_WIFIS];
+static int     wifiCount  = 0;
+static int     wifiLastOk = 0;  // ultima red que funciono: se prueba primero
+
+static void wifiLoadConfig()   // llamar una vez, desde babyInit()
+{
+  wifiCount = 0;
+  const int total = sizeof(WIFI_LIST) / sizeof(WIFI_LIST[0]);
+  for (int i = 0; i < total && wifiCount < MAX_WIFIS; i++) {
+    if (!WIFI_LIST[i].ssid || !WIFI_LIST[i].ssid[0]) continue;
+    strlcpy(wifiNets[wifiCount].ssid, WIFI_LIST[i].ssid, sizeof(wifiNets[0].ssid));
+    strlcpy(wifiNets[wifiCount].pass, WIFI_LIST[i].pass ? WIFI_LIST[i].pass : "",
+            sizeof(wifiNets[0].pass));
+    wifiCount++;
+  }
+  Serial.printf("[WIFI] %d red(es) configurada(s)\n", wifiCount);
+  for (int i = 0; i < wifiCount; i++) Serial.printf("   %d: %s\n", i + 1, wifiNets[i].ssid);
+}
+
+// Prueba las redes en orden (empezando por la ultima que funciono).
+// Comprueba netWanted cada 250 ms para poder abortar si se sale de la app.
+static bool wifiConnectAny()
+{
+  for (int k = 0; k < wifiCount; k++) {
+    int i = (wifiLastOk + k) % wifiCount;
+    if (!netWanted) return false;
+    Serial.printf("[WIFI] probando '%s'...\n", wifiNets[i].ssid);
+    WiFi.disconnect(false, false);
+    WiFi.begin(wifiNets[i].ssid, wifiNets[i].pass[0] ? wifiNets[i].pass : nullptr);
+
+    uint32_t t0 = millis();
+    while (millis() - t0 < WIFI_TRY_MS) {
+      if (!netWanted) return false;
+      if (WiFi.status() == WL_CONNECTED) {
+        wifiLastOk = i;
+        Serial.printf("[WIFI] conectado a '%s'\n", wifiNets[i].ssid);
+        return true;
+      }
+      vTaskDelay(pdMS_TO_TICKS(250));
+    }
+    Serial.printf("[WIFI] '%s' fallo, siguiente...\n", wifiNets[i].ssid);
+  }
+  return false;
+}
+// ---------------------------------------------------------------------------
+
+
 static void netTask(void *)
 {
   bool wifiOn = false;
@@ -173,7 +232,7 @@ static void netTask(void *)
   for (;;) {
     if (netWanted && !wifiOn) {
       WiFi.mode(WIFI_STA);
-      WiFi.begin(WIFI_SSID, WIFI_PASS);
+      // (quitado: WiFi.begin(WIFI_SSID, WIFI_PASS);)
       wifiOn = true;
       firstPoll = true;
       netStatus = NET_CONNECTING;
@@ -190,7 +249,7 @@ static void netTask(void *)
     if (wifiOn) {
       if (WiFi.status() != WL_CONNECTED) {
         if (netStatus != NET_CONNECTING) { netStatus = NET_CONNECTING; babyDirty = true; }
-        vTaskDelay(pdMS_TO_TICKS(250));
+        if (!wifiConnectAny()) vTaskDelay(pdMS_TO_TICKS(5000));  // si todas fallan, reintenta en 5 s
         continue;
       }
 
@@ -508,6 +567,7 @@ void buildBabyUI(lv_obj_t *scr)
 // ===========================================================================
 void babyInit()   // en setup(), antes de buildUI()
 {
+  wifiLoadConfig();
   babyMutex = xSemaphoreCreateMutex();
   cmdQueue  = xQueueCreate(8, sizeof(CmdType));
   xTaskCreate(netTask, "net", 10240, nullptr, 1, nullptr);   // TLS necesita pila grande
