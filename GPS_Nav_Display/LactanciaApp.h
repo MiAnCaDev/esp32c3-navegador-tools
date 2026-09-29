@@ -249,6 +249,17 @@ static void refreshBabyUI()
 
   char hm[16], line[56], cap[12];
 
+  // --- Habilitar los botones solo si el WiFi esta realmente conectado.
+  // Con NET_OFF/NET_CONNECTING/NET_ERROR se ven deshabilitados (atenuados)
+  // y no responden al toque, para no perder pulsaciones que no llegarian
+  // al servidor.
+  bool netOk = (netStatus == NET_ONLINE);
+  lv_obj_t *babyBtns[] = { bbIzqBtn, bbDerBtn, bbTomaFinBtn, bbSuenoBtn, bbPisBtn, bbCacaBtn };
+  for (lv_obj_t *b : babyBtns) {
+    if (netOk) lv_obj_clear_state(b, LV_STATE_DISABLED);
+    else       lv_obj_add_state(b, LV_STATE_DISABLED);
+  }
+
   // --- Estado de red ---
   switch (netStatus) {
     case NET_CONNECTING:
@@ -407,6 +418,10 @@ static lv_obj_t *makeBabyBtn(lv_obj_t *parent, int x, int y, int w, int h,
   lv_obj_set_size(b, w, h);
   lv_obj_set_style_bg_color(b, color, 0);
   lv_obj_set_style_radius(b, 8, 0);
+  // Aspecto claramente atenuado cuando el boton esta deshabilitado (sin WiFi).
+  lv_obj_set_style_bg_color(b, lv_palette_main(LV_PALETTE_GREY), LV_STATE_DISABLED);
+  lv_obj_set_style_bg_opa(b, LV_OPA_50, LV_STATE_DISABLED);
+  lv_obj_set_style_text_opa(b, LV_OPA_60, LV_STATE_DISABLED);
   lv_obj_add_event_cb(b, cb, LV_EVENT_CLICKED, nullptr);
   lv_obj_t *l = lv_label_create(b);
   lv_label_set_text(l, text);
