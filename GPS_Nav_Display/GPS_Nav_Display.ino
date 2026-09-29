@@ -245,6 +245,10 @@ bool      appMode       = false;     // false = navegacion, true = otras apps (B
 volatile bool pendingAppToggle = false;
 lv_obj_t *toastLabel    = nullptr;
 lv_timer_t *toastTimer  = nullptr;
+lv_obj_t *muteBtn        = nullptr;   // boton de silencio (solo visible en modo GPS)
+bool      soundMuted     = false;     // true = sin pitidos
+lv_obj_t *soundOnIcon    = nullptr;   // ondas de sonido (sonido activado)
+lv_obj_t *soundOffIcon   = nullptr;   // "X" (sonido desactivado)
 
 // ===========================================================================
 // FLUJO DE PANTALLA / LVGL
@@ -941,10 +945,10 @@ static void buildSunIcon(lv_obj_t *box)
   const float c = ICON_BOX / 2.0f;
   for (int i = 0; i < 8; i++) {
     float a = i * (float)M_PI / 4.0f;
-    rays[i][0].x = (lv_coord_t)lroundf(c + 7.0f  * cosf(a));
-    rays[i][0].y = (lv_coord_t)lroundf(c + 7.0f  * sinf(a));
-    rays[i][1].x = (lv_coord_t)lroundf(c + 10.5f * cosf(a));
-    rays[i][1].y = (lv_coord_t)lroundf(c + 10.5f * sinf(a));
+    rays[i][0].x = (lv_coord_t)lroundf(c + 6.0f  * cosf(a));
+    rays[i][0].y = (lv_coord_t)lroundf(c + 6.0f  * sinf(a));
+    rays[i][1].x = (lv_coord_t)lroundf(c + 10.0f * cosf(a));
+    rays[i][1].y = (lv_coord_t)lroundf(c + 10.0f * sinf(a));
     lv_obj_t *ln = lv_line_create(box);
     lv_line_set_points(ln, rays[i], 2);
     lv_obj_set_style_line_width(ln, 2, 0);
@@ -955,7 +959,7 @@ static void buildSunIcon(lv_obj_t *box)
   }
   lv_obj_t *disc = lv_obj_create(box);
   lv_obj_remove_style_all(disc);
-  lv_obj_set_size(disc, 9, 9);
+  lv_obj_set_size(disc, 8, 8);
   lv_obj_set_style_radius(disc, LV_RADIUS_CIRCLE, 0);
   lv_obj_set_style_bg_color(disc, lv_color_white(), 0);
   lv_obj_set_style_bg_opa(disc, LV_OPA_COVER, 0);
@@ -1008,6 +1012,65 @@ void appBtnEventCb(lv_event_t *e)
   pendingAppToggle = true;   // se procesa en loop()
 }
 
+// Altavoz: cuerpo + (ondas | X segun estado)
+static void buildSpeakerIcon(lv_obj_t *box)
+{
+  static lv_point_t body[]  = { {2,9},{6,9},{11,4},{11,20},{6,15},{2,15},{2,9} };
+  static lv_point_t wave1[] = { {14,9},{16,12},{14,15} };
+  static lv_point_t wave2[] = { {17,6},{20,12},{17,18} };
+  static lv_point_t x1[]    = { {15,9},{22,16} };
+  static lv_point_t x2[]    = { {22,9},{15,16} };
+
+  auto makeGroup = [&]() -> lv_obj_t * {
+    lv_obj_t *g = lv_obj_create(box);
+    lv_obj_remove_style_all(g);
+    lv_obj_set_size(g, ICON_BOX, ICON_BOX);
+    lv_obj_set_pos(g, 0, 0);
+    lv_obj_clear_flag(g, LV_OBJ_FLAG_CLICKABLE);
+    lv_obj_clear_flag(g, LV_OBJ_FLAG_SCROLLABLE);
+    return g;
+  };
+  auto addLine = [&](lv_obj_t *parent, lv_point_t *pts, uint16_t n) {
+    lv_obj_t *ln = lv_line_create(parent);
+    lv_line_set_points(ln, pts, n);
+    lv_obj_set_style_line_width(ln, 2, 0);
+    lv_obj_set_style_line_color(ln, lv_color_white(), 0);
+    lv_obj_set_style_line_rounded(ln, true, 0);
+    lv_obj_set_pos(ln, 0, 0);
+    lv_obj_clear_flag(ln, LV_OBJ_FLAG_CLICKABLE);
+  };
+
+  lv_obj_t *bodyGrp = makeGroup();
+  addLine(bodyGrp, body, 7);
+
+  soundOnIcon = makeGroup();
+  addLine(soundOnIcon, wave1, 3);
+  addLine(soundOnIcon, wave2, 3);
+
+  soundOffIcon = makeGroup();
+  addLine(soundOffIcon, x1, 2);
+  addLine(soundOffIcon, x2, 2);
+}
+
+void applyMuteIcon()
+{
+  if (soundMuted) {
+    lv_obj_add_flag(soundOnIcon, LV_OBJ_FLAG_HIDDEN);
+    lv_obj_clear_flag(soundOffIcon, LV_OBJ_FLAG_HIDDEN);
+  } else {
+    lv_obj_clear_flag(soundOnIcon, LV_OBJ_FLAG_HIDDEN);
+    lv_obj_add_flag(soundOffIcon, LV_OBJ_FLAG_HIDDEN);
+  }
+}
+
+void muteBtnEventCb(lv_event_t *e)
+{
+  if (lv_event_get_code(e) != LV_EVENT_CLICKED) return;
+  soundMuted = !soundMuted;
+  applyMuteIcon();
+  showToast(soundMuted ? "Sonido desactivado" : "Sonido activado");
+}
+
 // ===========================================================================
 // CONSTRUCCION DE LA INTERFAZ
 // ===========================================================================
@@ -1058,6 +1121,8 @@ void buildUI()
   // --- Botones fijos (siempre visibles, sin fondo): app (arriba izq.) y brillo (abajo izq.) ---
   appBtn = makeIconButton(scr, LV_ALIGN_TOP_LEFT, 2, 2, appBtnEventCb, buildGridIcon);
   brightBtn = makeIconButton(scr, LV_ALIGN_BOTTOM_LEFT, 2, -2, brightBtnEventCb, buildSunIcon);
+  muteBtn   = makeIconButton(scr, LV_ALIGN_LEFT_MID, 2, 0, muteBtnEventCb, buildSpeakerIcon);
+  applyMuteIcon();
 
   // --- App de lactancia (oculta por defecto, sustituye al "Proximamente") ---
   buildBabyUI(scr);
@@ -1346,6 +1411,7 @@ void toggleAppMode()
     pendingProximityAlert = false;
     pendingCloseAlert = false;
     setNavWidgetsVisible(false);
+    lv_obj_add_flag(muteBtn, LV_OBJ_FLAG_HIDDEN);   // <-- mute
     refreshSpeedLabel();
     refreshBatteryLabel();
     babyEnter();
@@ -1357,6 +1423,7 @@ void toggleAppMode()
     lastInstrKey = "";
     speedKmh = -1;
     setNavWidgetsVisible(true);
+    lv_obj_clear_flag(muteBtn, LV_OBJ_FLAG_HIDDEN); // <-- mute
     refreshDistanceLabel();
     refreshInstrLabel();
     refreshSpeedLabel();
@@ -1492,11 +1559,11 @@ void loop()
   // Procesamos los sonidos fuera del callback de Bluetooth
   if (pendingProximityAlert) {
     pendingProximityAlert = false;
-    playProximityAlert();
+    if (!soundMuted) playProximityAlert();
   }
   if (pendingCloseAlert) {
     pendingCloseAlert = false;
-    playCloseAlert();
+    if (!soundMuted) playCloseAlert();
   }
 
   static unsigned long lastSlow = 0;
