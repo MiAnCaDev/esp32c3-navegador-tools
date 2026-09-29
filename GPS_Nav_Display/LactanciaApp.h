@@ -347,6 +347,12 @@ static void queueCmd(CmdType c)
 static lv_obj_t *bbConfirmBox = nullptr;
 static CmdType   bbPendingCmd;
 
+// Se ejecuta SIEMPRE que el cuadro se destruye (Si, No o la X)
+static void confirmDeleteCb(lv_event_t *e)
+{
+  if (lv_event_get_target(e) == bbConfirmBox) bbConfirmBox = nullptr;
+}
+
 static void confirmEventCb(lv_event_t *e)
 {
   lv_obj_t *mbox = lv_event_get_current_target(e);
@@ -354,19 +360,19 @@ static void confirmEventCb(lv_event_t *e)
   if (txt && strcmp(txt, "Si") == 0) {
     queueCmd(bbPendingCmd);
   }
-  lv_msgbox_close(mbox);
-  bbConfirmBox = nullptr;
+  lv_msgbox_close(mbox);   // el puntero se limpia en confirmDeleteCb
 }
 
 static void showConfirm(CmdType c, const char *msg)
 {
-  if (bbConfirmBox) return;   // ya hay una confirmacion abierta, ignora el nuevo toque
+  if (bbConfirmBox) return;
   bbPendingCmd = c;
   static const char *btns[] = {"Si", "No", ""};
   bbConfirmBox = lv_msgbox_create(NULL, "Confirmar", msg, btns, true);
   lv_obj_set_width(bbConfirmBox, 220);
   lv_obj_center(bbConfirmBox);
-  lv_obj_add_event_cb(bbConfirmBox, confirmEventCb, LV_EVENT_VALUE_CHANGED, nullptr);
+  lv_obj_add_event_cb(bbConfirmBox, confirmEventCb,  LV_EVENT_VALUE_CHANGED, nullptr);
+  lv_obj_add_event_cb(bbConfirmBox, confirmDeleteCb, LV_EVENT_DELETE,        nullptr);
 }
 
 static void onIzqClick(lv_event_t *e)
