@@ -9,3 +9,5 @@ Modificar estos datos en LactanciaApp.h
 #define POLL_MS    20000                 // cada cuanto se consulta el estado en reposo
 // ---------------------------------------------------------------------------
 ```
+
+Bot lactancia: [@lactancia_bot](https://t.me/lactancia_bot)
