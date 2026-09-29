@@ -5,8 +5,14 @@ Modificar estos datos en LactanciaApp.h
 
 ```
 // ------------------------- CONFIGURACION -----------------------------------
-#define WIFI_SSID  "TU_WIFI"
-#define WIFI_PASS  "TU_CLAVE"
+// Redes WiFi, en orden de preferencia: { "NOMBRE_RED", "CONTRASEÑA" }
+// (solo 2,4 GHz). Para una red abierta deja la clave vacía: { "Cafeteria", "" }
+struct WifiCred { const char *ssid; const char *pass; };
+static const WifiCred WIFI_LIST[] = {
+  { "TU_WIFI", "TU_CLAVE" },
+  { "OtraRed",            "otraClave"    },
+  { "MovilMiki",          "claveMovil"   },
+};
 #define API_BASE   "https://control-panel.legioagro.com/app_bebe/lactancia/api/esp32.php"
 #define API_TOKEN  "CAMBIA_ESTE_TOKEN"   // el mismo que valida verificarAutenticacion()
 #define POLL_MS    20000                 // cada cuanto se consulta el estado en reposo
