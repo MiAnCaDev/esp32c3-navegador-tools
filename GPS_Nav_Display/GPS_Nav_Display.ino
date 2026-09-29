@@ -59,6 +59,7 @@
 #include <BLESecurity.h>
 
 #include "CST816D.h"
+#include "LactanciaApp.h"
 
 // ---------------------------------------------------------------------------
 // 0) TIPOS PROPIOS
@@ -240,8 +241,7 @@ lv_obj_t *batteryLabel  = nullptr;
 lv_obj_t *dimOverlay    = nullptr;
 lv_obj_t *brightBtn     = nullptr;
 lv_obj_t *appBtn        = nullptr;   // boton superior izquierdo (cambia de "app")
-lv_obj_t *appModeLabel  = nullptr;   // texto "Proximamente" del modo app
-bool      appMode       = false;     // false = navegacion, true = otras apps (BLE apagado)
+bool      appMode       = false;     // false = navegacion, true = otras apps (BLE apagado, app de lactancia)
 volatile bool pendingAppToggle = false;
 lv_obj_t *toastLabel    = nullptr;
 lv_timer_t *toastTimer  = nullptr;
@@ -1059,13 +1059,8 @@ void buildUI()
   appBtn = makeIconButton(scr, LV_ALIGN_TOP_LEFT, 2, 2, appBtnEventCb, buildGridIcon);
   brightBtn = makeIconButton(scr, LV_ALIGN_BOTTOM_LEFT, 2, -2, brightBtnEventCb, buildSunIcon);
 
-  // --- Texto del modo app (oculto por defecto) ---
-  appModeLabel = lv_label_create(scr);
-  lv_obj_set_style_text_color(appModeLabel, lv_color_white(), 0);
-  lv_obj_set_style_text_font(appModeLabel, &lv_font_montserrat_24, 0);
-  lv_obj_align(appModeLabel, LV_ALIGN_CENTER, 0, 0);
-  lv_label_set_text(appModeLabel, "Proximamente");
-  lv_obj_add_flag(appModeLabel, LV_OBJ_FLAG_HIDDEN);
+  // --- App de lactancia (oculta por defecto, sustituye al "Proximamente") ---
+  buildBabyUI(scr);
 
   // --- Toast (mensaje temporal, oculto por defecto) ---
   toastLabel = lv_label_create(scr);
@@ -1353,10 +1348,10 @@ void toggleAppMode()
     setNavWidgetsVisible(false);
     refreshSpeedLabel();
     refreshBatteryLabel();
-    lv_obj_clear_flag(appModeLabel, LV_OBJ_FLAG_HIDDEN);
-    showToast("Bluetooth apagado");
+    babyEnter();
+    showToast("Bluetooth apagado, WiFi activado");
   } else {
-    lv_obj_add_flag(appModeLabel, LV_OBJ_FLAG_HIDDEN);
+    babyExit();
     navActive = false;
     navInstr = ""; navAction = ""; navDistanceM = -1;
     lastInstrKey = "";
@@ -1427,6 +1422,8 @@ void setup()
   indev_drv.read_cb = my_touchpad_read;
   lv_indev_drv_register(&indev_drv);
 
+  babyInit();
+
   Serial.println("[CP6] buildUI...");
   buildUI();
   refreshSpeedLabel();
@@ -1448,6 +1445,8 @@ void loop()
 {
   lv_timer_handler();
   delay(5);
+
+  if (appMode) babyLoop();
 
   if (pendingAppToggle) {
     pendingAppToggle = false;
