@@ -34,7 +34,7 @@ static const WifiCred WIFI_LIST[] = {
   { "MovilMiki",          "claveMovil"   },
 };
 #define API_BASE   "https://control-panel.legioagro.com/app_bebe/lactancia/api/esp32.php"
-#define API_TOKEN  "e21a521a09cbb0cd95095c9esp32xxx"   // el mismo que valida verificarAutenticacion()
+#define API_TOKEN  "xxx"   // el mismo que valida verificarAutenticacion()
 #define POLL_MS    60000                 // cada cuanto se consulta el estado en reposo
 // ---------------------------------------------------------------------------
 
@@ -67,6 +67,7 @@ static SemaphoreHandle_t  babyMutex = nullptr;
 static QueueHandle_t      cmdQueue  = nullptr;
 static volatile bool      netWanted = false;
 static volatile NetStatus netStatus = NET_OFF;
+static volatile bool      netRadioOn = false;   // true mientras el WiFi esta realmente encendido
 static volatile bool      babyDirty = true;
 
 // Objetos LVGL
@@ -102,6 +103,13 @@ static void applyState(JsonDocument &d)
   babyDirty = true;
 }
 
+static void logNetFail(const char *what, int code)
+{
+  Serial.printf("[NET] %s fallo: code=%d (%s) heap=%u maxBloque=%u\n", what, code,
+                HTTPClient::errorToString(code).c_str(),
+                (unsigned)ESP.getFreeHeap(), (unsigned)ESP.getMaxAllocHeap());
+}
+
 // GET del estado completo
 static bool httpGetEstado()
 {
@@ -110,19 +118,19 @@ static bool httpGetEstado()
   WiFiClientSecure secure;
   secure.setInsecure();   // ver nota al final del fichero
   HTTPClient http;
-  if (!http.begin(secure, url)) return false;
-  http.setTimeout(6000);
+  if (!http.begin(secure, url)) { logNetFail("begin", 0); return false; }
+  http.setConnectTimeout(4000);
+  http.setTimeout(5000);
 
   int code = http.GET();
   bool ok = false;
   if (code == 200) {
     DynamicJsonDocument doc(512);
-    if (!deserializeJson(doc, http.getString())) {
-      applyState(doc);
-      ok = true;
-    }
+    DeserializationError err = deserializeJson(doc, http.getString());
+    if (!err) { applyState(doc); ok = true; }
+    else Serial.printf("[NET] JSON invalido: %s\n", err.c_str());
   } else {
-    Serial.printf("[NET] GET estado HTTP %d\n", code);
+    logNetFail("GET estado", code);
   }
   http.end();
   return ok;
@@ -136,8 +144,9 @@ static bool httpPostAccion(const char *body)
   WiFiClientSecure secure;
   secure.setInsecure();
   HTTPClient http;
-  if (!http.begin(secure, url)) return false;
-  http.setTimeout(6000);
+  if (!http.begin(secure, url)) { logNetFail("begin", 0); return false; }
+  http.setConnectTimeout(4000);
+  http.setTimeout(5000);
   http.addHeader("Content-Type", "application/x-www-form-urlencoded");
 
   int code = http.POST(String(body));
@@ -150,7 +159,7 @@ static bool httpPostAccion(const char *body)
       if (!ok) Serial.printf("[NET] codError=%d: %s\n", codError, (const char*)(doc["cadError"] | ""));
     }
   } else {
-    Serial.printf("[NET] POST HTTP %d\n", code);
+    logNetFail("POST", code);
   }
   http.end();
   return ok;
@@ -232,8 +241,8 @@ static void netTask(void *)
   for (;;) {
     if (netWanted && !wifiOn) {
       WiFi.mode(WIFI_STA);
-      // (quitado: WiFi.begin(WIFI_SSID, WIFI_PASS);)
       wifiOn = true;
+      netRadioOn = true;
       firstPoll = true;
       netStatus = NET_CONNECTING;
       babyDirty = true;
@@ -243,23 +252,29 @@ static void netTask(void *)
       WiFi.disconnect(true, false);
       WiFi.mode(WIFI_OFF);
       wifiOn = false;
+      netRadioOn = false;
       netStatus = NET_OFF;
     }
 
     if (wifiOn) {
       if (WiFi.status() != WL_CONNECTED) {
         if (netStatus != NET_CONNECTING) { netStatus = NET_CONNECTING; babyDirty = true; }
-        if (!wifiConnectAny()) vTaskDelay(pdMS_TO_TICKS(5000));  // si todas fallan, reintenta en 5 s
+        if (!wifiConnectAny()) {
+          // si todas fallan, pausa de 5 s (interrumpible si se sale de la app)
+          for (int i = 0; i < 20 && netWanted; i++) vTaskDelay(pdMS_TO_TICKS(250));
+        }
         continue;
       }
 
+      // tras un error se reintenta a los 5 s en vez de esperar POLL_MS
+      const uint32_t waitMs = (netStatus == NET_ERROR) ? 5000 : POLL_MS;
       CmdType c;
       bool ok;
       if (xQueueReceive(cmdQueue, &c, 0) == pdTRUE) {
         ok = httpPostAccion(cmdBody(c));
         if (ok) ok = httpGetEstado();   // el POST no devuelve el estado completo
         lastPoll = millis();
-      } else if (firstPoll || millis() - lastPoll >= POLL_MS) {
+      } else if (firstPoll || millis() - lastPoll >= waitMs) {
         ok = httpGetEstado();
         firstPoll = false;
         lastPoll = millis();
@@ -586,9 +601,12 @@ void babyExit()   // al salir de la app: WiFi OFF
 {
   lv_obj_add_flag(bbCont, LV_OBJ_FLAG_HIDDEN);
   netWanted = false;
-  // espera acotada a que la tarea apague el WiFi antes de levantar BLE
+  // Espera a que la tarea apague de verdad el WiFi (puede estar a mitad de una
+  // peticion HTTP) antes de levantar BLE. Se llama desde loop(), no desde un
+  // evento de LVGL, asi que es seguro mantener la pantalla viva mientras tanto.
   uint32_t t0 = millis();
-  while (netStatus != NET_OFF && millis() - t0 < 1500) delay(20);
+  while (netRadioOn && millis() - t0 < 12000) { lv_timer_handler(); delay(20); }
+  if (netRadioOn) Serial.println("[NET] AVISO: el WiFi no se apago a tiempo");
 }
 
 void babyLoop()   // en loop(), solo cuando appMode == true

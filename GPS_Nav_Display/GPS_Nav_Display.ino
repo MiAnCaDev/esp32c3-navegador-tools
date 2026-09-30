@@ -1338,7 +1338,12 @@ void setupBLE()
   // cifrado al tratarlo como un Bangle.js; sin esto, el ESP32 no sabe
   // responder a la negociacion de claves y la conexion se cae en bucle
   // con errores SMP/BTM.
-  BLESecurity *pSecurity = new BLESecurity();
+  // Objetos reutilizados entre ciclos de setupBLE() para no perder memoria
+  // cada vez que se alterna entre GPS y lactancia.
+  static ServerCallbacks srvCb;
+  static RxCallbacks     rxCb;
+  static BLESecurity    *pSecurity = nullptr;
+  if (!pSecurity) pSecurity = new BLESecurity();
   pSecurity->setAuthenticationMode(ESP_LE_AUTH_BOND);
   pSecurity->setCapability(ESP_IO_CAP_NONE);
   pSecurity->setInitEncryptionKey(ESP_BLE_ENC_KEY_MASK | ESP_BLE_ID_KEY_MASK);
@@ -1346,7 +1351,7 @@ void setupBLE()
 
   Serial.println("  [BLE 3/9] createServer...");
   bleServer = BLEDevice::createServer();
-  bleServer->setCallbacks(new ServerCallbacks());
+  bleServer->setCallbacks(&srvCb);
 
   Serial.println("  [BLE 4/9] createService...");
   BLEService *service = bleServer->createService(NUS_SERVICE_UUID);
@@ -1355,7 +1360,7 @@ void setupBLE()
   charRX = service->createCharacteristic(
       NUS_CHAR_RX_UUID,
       BLECharacteristic::PROPERTY_WRITE | BLECharacteristic::PROPERTY_WRITE_NR);
-  charRX->setCallbacks(new RxCallbacks());
+  charRX->setCallbacks(&rxCb);
 
   Serial.println("  [BLE 6/9] createCharacteristic TX...");
   charTX = service->createCharacteristic(
@@ -1434,6 +1439,8 @@ void toggleAppMode()
 #endif
     showToast("Bluetooth activado");
   }
+  Serial.printf("[HEAP] modo=%s libre=%u maxBloque=%u\n", appMode ? "lactancia" : "GPS",
+                (unsigned)ESP.getFreeHeap(), (unsigned)ESP.getMaxAllocHeap());
 }
 
 // ===========================================================================
