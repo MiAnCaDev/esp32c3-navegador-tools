@@ -1,5 +1,5 @@
 /*
-  LactanciaApp.h  -  "App" de lactancia para el display (sustituye a "Proximamente")
+  LactanciaApp.h 
 
   Copia este archivo junto a GPS_Nav_Display.ino (misma carpeta -> nueva pestana).
   - Al entrar en la app: babyEnter()  -> WiFi ON, consulta el estado
@@ -29,12 +29,12 @@
 // (solo 2,4 GHz). Para una red abierta deja la clave vacía: { "Cafeteria", "" }
 struct WifiCred { const char *ssid; const char *pass; };
 static const WifiCred WIFI_LIST[] = {
-  { "TU_WIFI", "TU_CLAVE" },
-  { "OtraRed",            "otraClave"    },
-  { "MovilMiki",          "claveMovil"   },
+  { "TU_WIFI",    "TU_CLAVE"   },
+  { "OtraRed",    "otraClave"  },
+  { "MovilMiki",  "claveMovil" },
 };
-#define API_BASE   "https://control-panel.legioagro.com/app_bebe/lactancia/api/esp32.php"
-#define API_TOKEN  "xxx"   // el mismo que valida verificarAutenticacion()
+#define API_BASE   "CAMBIA_ESTA_URL"
+#define API_TOKEN  "CAMBIA_ESTE_TOKEN"   
 #define POLL_MS    60000                 // cada cuanto se consulta el estado en reposo
 // ---------------------------------------------------------------------------
 
@@ -382,9 +382,9 @@ static void refreshBabyUI()
   if (s.panialTipo[0]) {
     fmtHM(adv(s.panialHace), hm, sizeof(hm));
     capitalize(s.panialTipo, cap, sizeof(cap));
-    snprintf(line, sizeof(line), "Panal hace %s (%s)", hm, cap);
+    snprintf(line, sizeof(line), "%s hace %s", cap, hm);
   } else {
-    strlcpy(line, "Sin panales registrados", sizeof(line));
+    strlcpy(line, "Sin deposiciones registradas", sizeof(line));
   }
   lv_label_set_text(bbPanialInfo, line);
 }
