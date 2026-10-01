@@ -9,13 +9,13 @@ Modificar estos datos en LactanciaApp.h
 // (solo 2,4 GHz). Para una red abierta deja la clave vacía: { "Cafeteria", "" }
 struct WifiCred { const char *ssid; const char *pass; };
 static const WifiCred WIFI_LIST[] = {
-  { "TU_WIFI", "TU_CLAVE" },
-  { "OtraRed",            "otraClave"    },
-  { "MovilMiki",          "claveMovil"   },
+  { "TU_WIFI",    "TU_CLAVE"   },
+  { "OtraRed",    "otraClave"  },
+  { "MovilMiki",  "claveMovil" },
 };
-#define API_BASE   "https://control-panel.legioagro.com/app_bebe/lactancia/api/esp32.php"
-#define API_TOKEN  "CAMBIA_ESTE_TOKEN"   // el mismo que valida verificarAutenticacion()
-#define POLL_MS    20000                 // cada cuanto se consulta el estado en reposo
+#define API_BASE   "CAMBIA_ESTA_URL"
+#define API_TOKEN  "CAMBIA_ESTE_TOKEN"   
+#define POLL_MS    60000                 // cada cuanto se consulta el estado en reposo
 // ---------------------------------------------------------------------------
 ```
 
