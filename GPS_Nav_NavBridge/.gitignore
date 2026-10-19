@@ -1,0 +1,44 @@
+# ---- Gradle ----
+.gradle/
+build/
+!gradle/wrapper/gradle-wrapper.jar
+!**/src/**/build/
+
+# ---- Configuración local (rutas de TU PC, no se comparte) ----
+local.properties
+
+# ---- Android Studio / IntelliJ ----
+.idea/
+*.iml
+captures/
+.externalNativeBuild/
+.cxx/
+.kotlin/
+
+# ---- Compilados ----
+*.apk
+*.aab
+*.ap_
+*.dex
+*.class
+
+# ---- Claves de firma (¡nunca subir!) ----
+*.jks
+*.keystore
+keystore.properties
+
+# ---- Registros y temporales ----
+*.log
+*.tmp
+*.swp
+
+# ---- Sistema operativo ----
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# ---- Arduino / firmware (si el firmware va en el mismo repositorio) ----
+firmware/build/
+*.elf
+*.bin
+*.map
