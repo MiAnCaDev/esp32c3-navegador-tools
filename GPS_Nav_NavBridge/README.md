@@ -24,3 +24,8 @@ la imagen de la flecha (tal cual la dibuja Google), distancia, calle y velocidad
 ## Protocolo (ver Frame.kt / PhoneLink.h)
 `0xA5 | tipo | largo(2, LE) | payload | checksum XOR`
 - 0x01 JSON UTF-8 · 0x02 icono (slot, w, h, bpp=4, píxeles 4 bits)
+
+## Autoría
+- Desarrollador: **MiAnCa**
+- Web: https://www.miguelandrescaballero.es/
+- Repositorio: https://github.com/MiAnCaDev/esp32c3-navegador-tools
