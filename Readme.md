@@ -1,5 +1,9 @@
 Bot lactancia: [@lactancia_bot](https://t.me/lactancia_bot)
 
+GPS_Nav_Display --> Usando aplicación GadGetBridge para enviar los datos del google maps.
+
+GPS_Nav_NavBridge --> Con APP propia. Puedes descargar el APK
+
 ## Conexión WIFI
 Modificar estos datos en LactanciaApp.h
 
