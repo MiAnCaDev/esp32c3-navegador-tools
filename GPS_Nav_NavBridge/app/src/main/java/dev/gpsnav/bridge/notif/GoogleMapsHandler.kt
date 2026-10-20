@@ -4,6 +4,7 @@ import android.app.Notification
 import android.content.Context
 import android.service.notification.StatusBarNotification
 import android.util.Log
+import dev.gpsnav.bridge.AppLog
 import dev.gpsnav.bridge.BridgeHub
 import dev.gpsnav.bridge.protocol.Frame
 import dev.gpsnav.bridge.protocol.FrameSink
@@ -24,6 +25,7 @@ class GoogleMapsHandler : NotificationHandler {
     private val TAG = "NavBridge"
     private var lastIconCrc = -1L
     private var lastSig = ""
+    private var warnedNoIcon = false
 
     override fun onLinkReady() { lastIconCrc = -1L; lastSig = "" }
 
@@ -52,9 +54,12 @@ class GoogleMapsHandler : NotificationHandler {
                 lastIconCrc = crc
                 out.send(Frame.icon(0, IconProcessor.SIZE, IconProcessor.SIZE, packed))
                 BridgeHub.lastIcon = IconProcessor.preview(packed)
+                warnedNoIcon = false
+                AppLog.i("Maps", "Icono nuevo enviado (${packed.size} B, id=$key)")
             }
         } else {
             Log.w(TAG, "Maps: no se pudo extraer ninguna imagen de la notificación")
+            if (!warnedNoIcon) { warnedNoIcon = true; AppLog.w("Maps", "No se pudo extraer la imagen de la notificación") }
         }
 
         // 2) Texto y distancia
@@ -66,6 +71,7 @@ class GoogleMapsHandler : NotificationHandler {
             lastSig = sig
             out.send(Frame.json(obj))
             BridgeHub.lastNav = "$instr | ${if (meters >= 0) "$meters m" else "?"}"
+            AppLog.d("Maps", "Nav: '$instr' ${if (meters >= 0) "$meters m" else "?"}")
         }
     }
 
@@ -74,6 +80,7 @@ class GoogleMapsHandler : NotificationHandler {
         lastSig = ""; lastIconCrc = -1L
         out.send(Frame.json(JSONObject().put("t", "nav")))   // sin instr/action = navegación terminada
         BridgeHub.lastNav = "(sin ruta)"
+        AppLog.i("Maps", "Navegación terminada")
     }
 
     // ------------------------------------------------------------ parseo del texto

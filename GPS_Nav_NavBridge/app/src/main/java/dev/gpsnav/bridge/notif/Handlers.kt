@@ -3,6 +3,7 @@ package dev.gpsnav.bridge.notif
 import android.content.Context
 import android.service.notification.StatusBarNotification
 import android.util.Log
+import dev.gpsnav.bridge.AppLog
 import dev.gpsnav.bridge.BridgeHub
 import dev.gpsnav.bridge.protocol.FrameSink
 
@@ -43,7 +44,7 @@ object HandlerRegistry {
     private fun forPackage(sbn: StatusBarNotification, block: (NotificationHandler) -> Unit) {
         for (h in handlers) {
             if (sbn.packageName !in h.packages) continue
-            runCatching { block(h) }.onFailure { Log.e(TAG, "handler ${h.id} falló", it) }
+            runCatching { block(h) }.onFailure { Log.e(TAG, "handler ${h.id} falló", it); AppLog.e("Handlers", "handler ${h.id} falló", it) }
         }
     }
 }

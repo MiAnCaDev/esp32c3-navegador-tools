@@ -2,6 +2,7 @@ package dev.gpsnav.bridge.notif
 
 import android.service.notification.NotificationListenerService
 import android.service.notification.StatusBarNotification
+import dev.gpsnav.bridge.AppLog
 
 class NavNotificationListener : NotificationListenerService() {
 
@@ -9,8 +10,11 @@ class NavNotificationListener : NotificationListenerService() {
         @Volatile var instance: NavNotificationListener? = null
     }
 
-    override fun onListenerConnected() { instance = this }
-    override fun onListenerDisconnected() { if (instance === this) instance = null }
+    override fun onListenerConnected() { instance = this; AppLog.i("Notif", "Acceso a notificaciones: conectado") }
+    override fun onListenerDisconnected() {
+        AppLog.w("Notif", "Acceso a notificaciones: DESCONECTADO por el sistema")
+        if (instance === this) instance = null
+    }
 
     override fun onNotificationPosted(sbn: StatusBarNotification) =
         HandlerRegistry.posted(applicationContext, sbn)
