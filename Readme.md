@@ -1,35 +1,46 @@
-Bot lactancia: [@lactancia_bot](https://t.me/lactancia_bot)
+# 🍼 Proyecto de Lactancia y Navegación ESP32
 
-GPS_Nav_Display --> Usando aplicación GadGetBridge para enviar los datos del google maps.
+Bienvenido al repositorio del proyecto. Aquí encontrarás las herramientas de software y la configuración necesarias para la pantalla y el bot de asistencia.
 
-GPS_Nav_NavBridge --> Con APP propia. Puedes descargar el APK
+La parte del bot de Lactancia es algo mas personal e individualizado, no afecta si solo quieres usar la parte de GPS pero está separado y se puede quitar.
 
-## Conexión WIFI
-Modificar estos datos en LactanciaApp.h
+---
 
-```
-// ------------------------- CONFIGURACION -----------------------------------
+## 🤖 Enlaces de Interés
+* **Bot de Lactancia:** [@lactancia_bot](https://t.me/lactancia_bot)
+
+---
+
+## 📂 Estructura del Repositorio
+
+El proyecto se divide en las siguientes carpetas y componentes principales:
+
+| Carpeta / Componente | Descripción |
+| :--- | :--- |
+| **`GPS_Nav_Display`** | Versión que utiliza la aplicación de terceros **GadgetBridge** para enviar los datos de Google Maps. |
+| **`GPS_Nav_NavBridge`** | Versión con aplicación propia desarrollada para el proyecto. ¡Puedes descargar el APK directamente! |
+| **`Informacion adicional`** | Documentación y guías de configuración del hardware y software. |
+| **`prueba_colores`** | Script de prueba para verificar la correcta visualización de colores en la pantalla. |
+| **`prueba_tactil`** | Script de prueba para comprobar el funcionamiento del panel táctil. |
+
+---
+
+## 📶 Configuración WiFi
+
+Para configurar las redes y los parámetros de conexión, debes modificar el fichero **`LactanciaApp.h`** con los siguientes datos:
+
+```cpp
+// ---------------------------------------------------------------------------
 // Redes WiFi, en orden de preferencia: { "NOMBRE_RED", "CONTRASEÑA" }
 // (solo 2,4 GHz). Para una red abierta deja la clave vacía: { "Cafeteria", "" }
 struct WifiCred { const char *ssid; const char *pass; };
 static const WifiCred WIFI_LIST[] = {
-  { "TU_WIFI",    "TU_CLAVE"   },
+  { "TU_WIFI",    "TU_CLAVE"    },
   { "OtraRed",    "otraClave"  },
   { "MovilMiki",  "claveMovil" },
 };
+
 #define API_BASE   "CAMBIA_ESTA_URL"
 #define API_TOKEN  "CAMBIA_ESTE_TOKEN"   
-#define POLL_MS    60000                 // cada cuanto se consulta el estado en reposo
+#define POLL_MS    60000                 // Frecuencia de consulta en reposo (ms)
 // ---------------------------------------------------------------------------
-```
-
-Si alguna contraseña lleva " o \, hay que escaparlas en C++ (\" y \\). Las !, ñ y demás símbolos normales no dan problema, aunque evita la ñ y los acentos en la clave. El ESP32 las manda tal cual y suelen dar guerra según cómo guarde el fichero tu editor.
-
-## Batería
-Si quieres medir la batería de verdad, tendrías que modificar el hardware: soldar un divisor resistivo (por ejemplo 100k + 100k, como comentaste) entre BAT+ y GND, y llevar el punto medio a un GPIO libre con ADC. En el ESP32-C3 los pines con ADC1 son GPIO0–GPIO4; de esos, según el pin_config.h de Spotpear, están libres (no usados por pantalla ni táctil): GPIO0 y GPIO3. Cualquiera de los dos serviría como BATTERY_ADC_PIN si haces esa modificación casera.
-
-Habrá que cambiar:
-```
-#define ENABLE_BATTERY 0
-#define BATTERY_ADC_PIN 0
-```
