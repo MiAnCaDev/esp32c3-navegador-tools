@@ -55,6 +55,12 @@
 //            El resto del dispositivo (GPS, brujula, Bluetooth...) sigue igual.
 #define ENABLE_LACTANCIA true
 
+// SONIDO (pitidos de aviso de giro en modo GPS y brujula)
+//   true  -> al encender, el sonido esta SILENCIADO (se activa con el boton de volumen).
+//   false -> al encender, el sonido esta ACTIVADO.
+//   Se aplica en cada arranque: lo que elijas con el boton se pierde al reiniciar.
+#define SOUND_MUTED_BY_DEFAULT true
+
 // ============================================================================
 
 #define LGFX_USE_V1
@@ -259,7 +265,7 @@ volatile bool pendingAppToggle = false;
 lv_obj_t *toastLabel    = nullptr;
 lv_timer_t *toastTimer  = nullptr;
 lv_obj_t *muteBtn        = nullptr;   // boton de silencio (solo visible en modo GPS)
-bool      soundMuted     = false;     // true = sin pitidos
+bool      soundMuted     = SOUND_MUTED_BY_DEFAULT;   // true = sin pitidos
 lv_obj_t *soundOnIcon    = nullptr;   // ondas de sonido (sonido activado)
 lv_obj_t *soundOffIcon   = nullptr;   // "X" (sonido desactivado)
 
