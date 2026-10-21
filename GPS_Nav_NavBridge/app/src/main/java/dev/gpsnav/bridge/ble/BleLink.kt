@@ -31,6 +31,8 @@ class BleLink(
     companion object {
         val NUS_SERVICE: UUID = UUID.fromString("6E400001-B5A3-F393-E0A9-E50E24DCCA9E")
         val NUS_RX: UUID = UUID.fromString("6E400002-B5A3-F393-E0A9-E50E24DCCA9E")
+        val NUS_TX: UUID = UUID.fromString("6E400003-B5A3-F393-E0A9-E50E24DCCA9E")
+        private val CCCD: UUID = UUID.fromString("00002902-0000-1000-8000-00805f9b34fb")
         /** Tiempo que se intenta reconectar antes de avisar con la vibración. */
         const val GIVE_UP_MS = 20_000L
         private const val TAG = "BLE"
@@ -64,6 +66,11 @@ class BleLink(
     private var scanning = false
     private var readySince = 0L
     private var lastWriteFailLog = 0L
+
+    /** true si el ESP32 ha avisado de que apaga el Bluetooth a propósito (modo lactancia). */
+    @Volatile
+    var sleeping = false
+        private set
 
     /** Nombre del dispositivo al que se conecta/está conectado (si se conoce). */
     @Volatile
@@ -99,7 +106,7 @@ class BleLink(
         ready = false
         synchronized(queue) { queue.clear(); writing = false }
         runCatching { gatt?.disconnect(); gatt?.close() }
-        gatt = null; lastDevice = null; deviceName = null
+        gatt = null; lastDevice = null; deviceName = null; sleeping = false
         connectOrScan()
     }
 
@@ -109,7 +116,7 @@ class BleLink(
         main.removeCallbacksAndMessages(null)
         stopScan()
         runCatching { gatt?.disconnect(); gatt?.close() }
-        gatt = null; ready = false
+        gatt = null; ready = false; sleeping = false
         synchronized(queue) { queue.clear(); writing = false }
         onStatus("Parado")
     }
@@ -166,7 +173,7 @@ class BleLink(
     private fun retry() {
         if (running) {
             AppLog.d(TAG, "Reintento en 2 s")
-            main.postDelayed({ connectOrScan() }, 2000)
+            main.postDelayed({ connectOrScan() }, if (sleeping) 5000L else 2000L)
         }
     }
 
@@ -223,6 +230,28 @@ class BleLink(
         gatt = dev.connectGatt(ctx, false, gattCb, BluetoothDevice.TRANSPORT_LE)
     }
 
+    private fun becomeReady(g: BluetoothGatt) {
+        if (ready || gatt !== g) return
+        ready = true; readySince = SystemClock.elapsedRealtime()
+        sleeping = false
+        main.removeCallbacks(giveUp)
+        AppLog.i(TAG, "LISTO: conectado a ${deviceName ?: g.device.address}, MTU=$mtu")
+        onStatus("Conectado (MTU $mtu)")
+        onReady()
+    }
+
+    /** Mensajes que manda el ESP32 por la característica TX. */
+    private fun handleIncoming(bytes: ByteArray) {
+        val s = String(bytes, Charsets.UTF_8)
+        AppLog.d(TAG, "ESP32 -> móvil: ${s.trim()}")
+        if (s.contains("\"bye\"")) {
+            sleeping = true
+            main.removeCallbacks(giveUp)
+            AppLog.i(TAG, "El ESP32 avisa: pausa voluntaria (modo lactancia). No se dará alarma.")
+            onStatus("ESP32 en pausa (modo lactancia)")
+        }
+    }
+
     private val gattCb = object : BluetoothGattCallback() {
         override fun onConnectionStateChange(g: BluetoothGatt, status: Int, newState: Int) {
             AppLog.i(TAG, "Estado GATT: ${stateName(newState)}, status=${gattStatus(status)}")
@@ -241,10 +270,10 @@ class BleLink(
                 runCatching { g.close() }
                 gatt = null
                 if (!wasReady) lastDevice = null   // por si la dirección ya no vale: reescanear
-                if (wasReady) {                    // conexión perdida: cuenta atrás para avisar
+                if (wasReady && !sleeping) {       // conexión perdida: cuenta atrás para avisar
                     main.removeCallbacks(giveUp); main.postDelayed(giveUp, GIVE_UP_MS)
                 }
-                onStatus("Desconectado, reintentando...")
+                onStatus(if (sleeping) "ESP32 en pausa (modo lactancia)" else "Desconectado, reintentando...")
                 retry()
             }
         }
@@ -261,11 +290,42 @@ class BleLink(
                 AppLog.e(TAG, "Servicios descubiertos (status=${gattStatus(status)}) pero NO está el servicio NUS: ¿es un ESP32 Nav?")
                 onStatus("Servicio NUS no encontrado"); g.disconnect(); return
             }
-            rx = c; ready = true; readySince = SystemClock.elapsedRealtime()
-            main.removeCallbacks(giveUp)
-            AppLog.i(TAG, "LISTO: conectado a ${deviceName ?: g.device.address}, MTU=$mtu")
-            onStatus("Conectado (MTU $mtu)")
-            onReady()
+            rx = c
+            // Suscripción a los avisos del ESP32 (p. ej. "bye" al entrar en modo lactancia)
+            val tx = g.getService(NUS_SERVICE)?.getCharacteristic(NUS_TX)
+            val cccd = tx?.getDescriptor(CCCD)
+            if (tx != null && cccd != null) {
+                g.setCharacteristicNotification(tx, true)
+                val ok = if (Build.VERSION.SDK_INT >= 33) {
+                    g.writeDescriptor(cccd, BluetoothGattDescriptor.ENABLE_NOTIFICATION_VALUE) ==
+                        BluetoothStatusCodes.SUCCESS
+                } else {
+                    @Suppress("DEPRECATION") run {
+                        cccd.value = BluetoothGattDescriptor.ENABLE_NOTIFICATION_VALUE
+                        g.writeDescriptor(cccd)
+                    }
+                }
+                if (ok) {
+                    main.postDelayed({ becomeReady(g) }, 3000)   // por si el descriptor nunca confirma
+                    return
+                }
+                AppLog.w(TAG, "No se pudo suscribir a las notificaciones del ESP32")
+            }
+            becomeReady(g)
+        }
+
+        override fun onDescriptorWrite(g: BluetoothGatt, d: BluetoothGattDescriptor, status: Int) {
+            AppLog.i(TAG, "Suscripción a avisos del ESP32: status=${gattStatus(status)}")
+            becomeReady(g)
+        }
+
+        @Suppress("DEPRECATION")
+        override fun onCharacteristicChanged(g: BluetoothGatt, c: BluetoothGattCharacteristic) {
+            c.value?.let { handleIncoming(it) }
+        }
+
+        override fun onCharacteristicChanged(g: BluetoothGatt, c: BluetoothGattCharacteristic, value: ByteArray) {
+            handleIncoming(value)
         }
 
         override fun onCharacteristicWrite(g: BluetoothGatt, c: BluetoothGattCharacteristic, status: Int) {

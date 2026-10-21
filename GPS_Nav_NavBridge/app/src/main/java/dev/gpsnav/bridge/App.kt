@@ -13,6 +13,7 @@ class App : Application() {
     override fun onCreate() {
         super.onCreate()
         AppLog.init(this)
+        Destination.load(this)
         val v = runCatching { packageManager.getPackageInfo(packageName, 0).versionName }.getOrNull()
         AppLog.i("App", "===== NUEVA SESIÓN (proceso iniciado) · v$v · Android ${Build.VERSION.RELEASE} " +
             "(API ${Build.VERSION.SDK_INT}) · ${Build.MANUFACTURER} ${Build.MODEL}")

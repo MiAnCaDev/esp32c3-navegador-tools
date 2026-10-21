@@ -18,6 +18,7 @@ import android.location.LocationListener
 import android.location.LocationManager
 import android.media.AudioAttributes
 import android.os.Build
+import android.os.Handler
 import android.os.IBinder
 import android.os.Looper
 import android.os.PowerManager
@@ -45,8 +46,18 @@ class BridgeService : Service() {
     private var locationOk = false      // false si Android no nos deja usar GPS (arranque en segundo plano sin permiso)
     private var startFailed = false
 
+    // Cada segundo se manda al ESP32 el estado de la brújula (destino, ángulo y distancia).
+    private val destHandler = Handler(Looper.getMainLooper())
+    private val destTick = object : Runnable {
+        override fun run() {
+            BridgeHub.sink.send(Frame.json(Destination.frame()))
+            destHandler.postDelayed(this, 1000)
+        }
+    }
+
     private val locListener = object : LocationListener {
         override fun onLocationChanged(loc: Location) {
+            Destination.onLocation(loc)
             if (!loc.hasSpeed()) return
             val kmh = Math.round(loc.speed * 3.6f)
             BridgeHub.lastSpeed = "$kmh km/h"
@@ -116,7 +127,11 @@ class BridgeService : Service() {
         val connected = l?.ready == true
         val dev = l?.deviceName ?: Prefs.deviceName(this)
 
-        val title = "Esp Nav MiAnCa · " + if (connected) "Conectado" else "Sin conexión"
+        val title = "Esp Nav MiAnCa · " + when {
+            connected -> "Conectado"
+            l?.sleeping == true -> "En pausa"
+            else -> "Sin conexión"
+        }
         val text = if (connected) "Dispositivo: ${dev ?: "ESP32"}"
                    else "${dev ?: "ESP32"} · ${BridgeHub.bleStatus}"
 
@@ -181,6 +196,7 @@ class BridgeService : Service() {
         )
         link = l; BridgeHub.link = l
         l.start()
+        destHandler.removeCallbacks(destTick); destHandler.post(destTick)
     }
 
     private fun startLocationIfPossible() {
@@ -212,6 +228,7 @@ class BridgeService : Service() {
 
     override fun onDestroy() {
         AppLog.i("Service", "onDestroy (wantRunning=${Prefs.wantRunning(this)}, startFailed=$startFailed)")
+        destHandler.removeCallbacks(destTick)
         link?.stop(); link = null; BridgeHub.link = null
         lm?.removeUpdates(locListener); lm = null
         BridgeHub.bleStatus = "Parado"

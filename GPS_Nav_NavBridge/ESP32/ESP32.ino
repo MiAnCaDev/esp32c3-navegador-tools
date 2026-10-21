@@ -45,6 +45,18 @@
   ============================================================================
 */
 
+// ============================================================================
+//  OPCIONES DE ESTE DISPOSITIVO   (cambia el valor y vuelve a flashear)
+// ============================================================================
+
+// MODO LACTANCIA  (boton de menu, arriba a la izquierda)
+//   true  -> el boton alterna entre "GPS / brujula" y la app de lactancia.
+//   false -> el boton solo muestra "Funcion no habilitada" y no hace nada.
+//            El resto del dispositivo (GPS, brujula, Bluetooth...) sigue igual.
+#define ENABLE_LACTANCIA true
+
+// ============================================================================
+
 #define LGFX_USE_V1
 #include <Arduino.h>
 #include <lvgl.h>
@@ -250,6 +262,22 @@ lv_obj_t *muteBtn        = nullptr;   // boton de silencio (solo visible en modo
 bool      soundMuted     = false;     // true = sin pitidos
 lv_obj_t *soundOnIcon    = nullptr;   // ondas de sonido (sonido activado)
 lv_obj_t *soundOffIcon   = nullptr;   // "X" (sonido desactivado)
+
+// --- Brujula: flecha hacia un destino fijado en el movil (solo en modo GPS/brujula) ---
+lv_obj_t *compassBtn     = nullptr;   // boton nuevo (visible solo en modo GPS y brujula)
+lv_obj_t *compassRing    = nullptr;   // aro del icono (ambar cuando la brujula esta activa)
+lv_obj_t *compassNeedle  = nullptr;   // aguja del icono
+bool      compassMode    = false;     // true = pantalla de brujula (solo cuando appMode == false)
+volatile bool pendingCompassToggle = false;
+bool      destSet        = false;     // el movil tiene un destino fijado
+bool      destFix        = true;      // el movil tiene posicion GPS
+bool      destOk         = false;     // el movil conoce el rumbo de marcha
+float     destRelDeg     = 0;         // angulo del destino respecto a "arriba" (+ = derecha)
+int       destDistM      = -1;        // distancia en linea recta (m)
+char      destName[26]   = "";
+unsigned long lastDestMillis = 0;
+#define DEST_STALE_MS 6000            // sin mensajes del movil durante este tiempo = sin datos
+#define DEST_ARRIVE_M 20              // por debajo de esta distancia: "Has llegado"
 
 // ===========================================================================
 // FLUJO DE PANTALLA / LVGL
@@ -725,6 +753,7 @@ static bool isRoundaboutMnv(ManeuverType m)
 
 void updateArrow()
 {
+  if (compassMode && !appMode) return;   // la brujula usa el mismo canvas
   lv_canvas_fill_bg(arrowCanvas, lv_color_black(), LV_OPA_TRANSP);
 
   if (!navActive) {
@@ -807,6 +836,7 @@ void formatDistance(int meters, char *out, size_t outLen)
 
 void refreshDistanceLabel()
 {
+  if (compassMode && !appMode) return;
   char buf[16];
   formatDistance(navDistanceM, buf, sizeof(buf));
   lv_label_set_text(distanceLabel, navActive ? buf : "Sin ruta");
@@ -814,6 +844,7 @@ void refreshDistanceLabel()
 
 void refreshInstrLabel()
 {
+  if (compassMode && !appMode) return;
   if (!navActive || navInstr.length() == 0) {
     lv_label_set_text(instrLabel, "");
   } else {
@@ -1092,6 +1123,45 @@ void applyMuteIcon()
   }
 }
 
+// Brujula: aro + aguja en diagonal. Se ilumina en ambar cuando la brujula esta activa.
+static void buildCompassIcon(lv_obj_t *box)
+{
+  static lv_point_t needle[] = { {17,7},{14,14},{7,17},{10,10},{17,7} };
+
+  compassRing = lv_obj_create(box);
+  lv_obj_remove_style_all(compassRing);
+  lv_obj_set_size(compassRing, ICON_BOX, ICON_BOX);
+  lv_obj_set_pos(compassRing, 0, 0);
+  lv_obj_set_style_radius(compassRing, LV_RADIUS_CIRCLE, 0);
+  lv_obj_set_style_border_width(compassRing, 2, 0);
+  lv_obj_set_style_border_color(compassRing, lv_color_white(), 0);
+  lv_obj_set_style_border_opa(compassRing, LV_OPA_COVER, 0);
+  lv_obj_clear_flag(compassRing, LV_OBJ_FLAG_CLICKABLE);
+  lv_obj_clear_flag(compassRing, LV_OBJ_FLAG_SCROLLABLE);
+
+  compassNeedle = lv_line_create(box);
+  lv_line_set_points(compassNeedle, needle, 5);
+  lv_obj_set_style_line_width(compassNeedle, 2, 0);
+  lv_obj_set_style_line_color(compassNeedle, lv_color_white(), 0);
+  lv_obj_set_style_line_rounded(compassNeedle, true, 0);
+  lv_obj_set_pos(compassNeedle, 0, 0);
+  lv_obj_clear_flag(compassNeedle, LV_OBJ_FLAG_CLICKABLE);
+}
+
+void applyCompassIcon()
+{
+  if (!compassRing || !compassNeedle) return;
+  lv_color_t c = compassMode ? lv_palette_main(LV_PALETTE_AMBER) : lv_color_white();
+  lv_obj_set_style_border_color(compassRing, c, 0);
+  lv_obj_set_style_line_color(compassNeedle, c, 0);
+}
+
+void compassBtnEventCb(lv_event_t *e)
+{
+  if (lv_event_get_code(e) != LV_EVENT_CLICKED) return;
+  pendingCompassToggle = true;   // se procesa en loop()
+}
+
 void muteBtnEventCb(lv_event_t *e)
 {
   if (lv_event_get_code(e) != LV_EVENT_CLICKED) return;
@@ -1152,6 +1222,8 @@ void buildUI()
   brightBtn = makeIconButton(scr, LV_ALIGN_BOTTOM_LEFT, 2, -2, brightBtnEventCb, buildSunIcon);
   muteBtn   = makeIconButton(scr, LV_ALIGN_LEFT_MID, 2, 0, muteBtnEventCb, buildSpeakerIcon);
   applyMuteIcon();
+  compassBtn = makeIconButton(scr, LV_ALIGN_LEFT_MID, 2, -48, compassBtnEventCb, buildCompassIcon);
+  applyCompassIcon();
 
   // --- App de lactancia (oculta por defecto, sustituye al "Proximamente") ---
   buildBabyUI(scr);
@@ -1199,6 +1271,142 @@ int parseDistanceMeters(JsonVariant distVar)
   return (int)val;
 }
 
+// ===========================================================================
+// BRUJULA: flecha hacia el destino. El movil calcula el angulo (respecto a la
+// direccion de marcha) y la distancia; aqui solo se dibuja.
+// ===========================================================================
+static uint32_t compassSig = 0;      // firma de lo dibujado, para no repintar sin cambios
+
+static void compassDrawDash(lv_color_t color)   // icono neutro (sin destino / sin datos)
+{
+  lv_point_t pts[4] = {
+    { 30, ARROW_CANVAS_SIZE/2 - 8 }, { ARROW_CANVAS_SIZE-30, ARROW_CANVAS_SIZE/2 - 8 },
+    { ARROW_CANVAS_SIZE-30, ARROW_CANVAS_SIZE/2 + 8 }, { 30, ARROW_CANVAS_SIZE/2 + 8 }
+  };
+  lv_draw_rect_dsc_t dsc;
+  lv_draw_rect_dsc_init(&dsc);
+  dsc.bg_color = color;
+  dsc.bg_opa   = LV_OPA_COVER;
+  lv_canvas_draw_polygon(arrowCanvas, pts, 4, &dsc);
+}
+
+static void compassDrawArrow(float relDeg, lv_color_t color)
+{
+  const float c = ARROW_CANVAS_SIZE / 2.0f;
+  float r  = relDeg * (float)M_PI / 180.0f;
+  float dx = sinf(r), dy = -cosf(r);                 // hacia donde apunta (0 = arriba)
+  float tailX = c - dx * 40.0f, tailY = c - dy * 40.0f;
+  float baseX = c + dx * 12.0f, baseY = c + dy * 12.0f;
+
+  lv_draw_line_dsc_t ldsc;
+  lv_draw_line_dsc_init(&ldsc);
+  ldsc.color = color;
+  ldsc.width = 14;
+  ldsc.opa = LV_OPA_COVER;
+  ldsc.round_start = 1;
+  ldsc.round_end = 1;
+  lv_point_t shaft[2] = {
+    { (lv_coord_t)lroundf(tailX), (lv_coord_t)lroundf(tailY) },
+    { (lv_coord_t)lroundf(baseX), (lv_coord_t)lroundf(baseY) }
+  };
+  lv_canvas_draw_line(arrowCanvas, shaft, 2, &ldsc);
+  drawArrowHead(baseX, baseY, relDeg, 40.0f, 30.0f, color);
+}
+
+static void compassDrawCheck(lv_color_t color)
+{
+  lv_draw_line_dsc_t ldsc;
+  lv_draw_line_dsc_init(&ldsc);
+  ldsc.color = color;
+  ldsc.width = 14;
+  ldsc.opa = LV_OPA_COVER;
+  ldsc.round_start = 1;
+  ldsc.round_end = 1;
+  lv_point_t pts[3] = { { 30, 70 }, { 55, 96 }, { 102, 42 } };
+  lv_canvas_draw_line(arrowCanvas, pts, 3, &ldsc);
+}
+
+static uint32_t sigMix(uint32_t h, uint32_t v) { return (h * 16777619u) ^ v; }
+
+void compassRefresh()
+{
+  if (appMode || !compassMode) return;
+
+  const bool fresh = lastDestMillis != 0 && (millis() - lastDestMillis) < DEST_STALE_MS;
+  const bool arrived = destDistM >= 0 && destDistM < DEST_ARRIVE_M;
+  int state;
+  if      (!bleClientConnected) state = 1;   // sin conexion con el movil
+  else if (!fresh)              state = 2;   // sin datos del movil
+  else if (!destSet)            state = 3;   // ningun destino fijado
+  else if (!destFix)            state = 4;   // sin senal GPS
+  else if (arrived)             state = 5;   // has llegado
+  else if (!destOk)             state = 6;   // falta rumbo: muevete para orientar
+  else                          state = 7;   // flecha normal
+
+  uint32_t sig = 2166136261u;
+  sig = sigMix(sig, (uint32_t)state);
+  if (state >= 5) {
+    sig = sigMix(sig, (uint32_t)(int)lroundf(destRelDeg));
+    sig = sigMix(sig, (uint32_t)destDistM);
+    for (const char *p = destName; *p; p++) sig = sigMix(sig, (uint8_t)*p);
+  }
+  sig |= 1;
+  if (sig == compassSig) return;
+  compassSig = sig;
+
+  lv_canvas_fill_bg(arrowCanvas, lv_color_black(), LV_OPA_TRANSP);
+  const lv_color_t grey  = lv_palette_main(LV_PALETTE_GREY);
+  const lv_color_t amber = lv_palette_main(LV_PALETTE_AMBER);
+  const lv_color_t green = lv_palette_main(LV_PALETTE_GREEN);
+  char dist[16];
+  formatDistance(destDistM, dist, sizeof(dist));
+
+  switch (state) {
+    case 1:
+      compassDrawDash(grey);
+      lv_label_set_text(distanceLabel, "---");
+      lv_label_set_text(instrLabel, "Sin conexion con el movil");
+      break;
+    case 2:
+      compassDrawDash(grey);
+      lv_label_set_text(distanceLabel, "---");
+      lv_label_set_text(instrLabel, "Sin datos del movil");
+      break;
+    case 3:
+      compassDrawDash(grey);
+      lv_label_set_text(distanceLabel, "---");
+      lv_label_set_text(instrLabel, "Ningun destino fijado");
+      break;
+    case 4:
+      compassDrawDash(grey);
+      lv_label_set_text(distanceLabel, "---");
+      lv_label_set_text(instrLabel, "Sin senal GPS");
+      break;
+    case 5:
+      compassDrawCheck(green);
+      lv_label_set_text(distanceLabel, "Has llegado");
+      lv_label_set_text(instrLabel, destName);
+      break;
+    case 6:
+      compassDrawDash(grey);
+      lv_label_set_text(distanceLabel, dist);
+      lv_label_set_text(instrLabel, "Muevete para orientar");
+      break;
+    default:
+      compassDrawArrow(destRelDeg, amber);
+      lv_label_set_text(distanceLabel, dist);
+      lv_label_set_text(instrLabel, destName[0] ? destName : "Destino");
+      break;
+  }
+  lv_obj_invalidate(arrowCanvas);
+}
+
+void compassInvalidate()   // fuerza el repintado (al entrar en brujula)
+{
+  compassSig = 0;
+  compassRefresh();
+}
+
 void handleNavJson(JsonDocument &doc)
 {
   if (!doc.containsKey("instr") && !doc.containsKey("action")) {
@@ -1228,6 +1436,32 @@ void handleGpsJson(JsonDocument &doc)
     lastGpsMillis = millis();
     refreshSpeedLabel();
   }
+}
+
+// {"t":"dest","set":0}                                   -> ningun destino fijado
+// {"t":"dest","set":1,"fix":1,"ok":1,"rel":-35,"d":420,"name":"Casa"}
+//   rel = angulo hacia el destino respecto a la direccion de marcha (+ = derecha)
+//   ok  = 1 si el movil conoce el rumbo; fix = 1 si tiene posicion GPS
+void handleDestJson(JsonDocument &doc)
+{
+  lastDestMillis = millis();
+  if (lastDestMillis == 0) lastDestMillis = 1;
+  destSet = ((int)(doc["set"] | 0)) != 0;
+  if (destSet) {
+    destFix    = ((int)(doc["fix"] | 1)) != 0;
+    destOk     = ((int)(doc["ok"] | 0)) != 0;
+    destRelDeg = doc["rel"] | 0.0f;
+    destDistM  = doc["d"] | -1;
+    String nm = stripNonAscii(String((const char *)(doc["name"] | "")));
+    if (nm.length() > 25) nm = nm.substring(0, 25);
+    strncpy(destName, nm.c_str(), sizeof(destName) - 1);
+    destName[sizeof(destName) - 1] = 0;
+  } else {
+    destName[0] = 0;
+    destDistM = -1;
+    destOk = false;
+  }
+  compassRefresh();
 }
 
 // El movil a veces manda letras acentuadas (nombres de calle) escapadas en
@@ -1308,6 +1542,8 @@ void processLine(String line)
   } else if (strcmp(t, "gps") == 0) {
     Serial.println("  └─> ¡Datos de velocidad/GPS recibidos!");
     handleGpsJson(doc);
+  } else if (strcmp(t, "dest") == 0) {
+    handleDestJson(doc);
   } else {
     Serial.printf("  └─> El comando '%s' no es de navegacion (se ignora).\n", t);
   }
@@ -1446,10 +1682,25 @@ void setNavWidgetsVisible(bool visible)
 
 void toggleAppMode()
 {
+  // Lactancia deshabilitada en este dispositivo (ver ENABLE_LACTANCIA al inicio del archivo)
+  if (!ENABLE_LACTANCIA) {
+    showToast("Funcion no habilitada");
+    return;
+  }
+
   appMode = !appMode;
 
   if (appMode) {
+    compassMode = false;                 // al volver, siempre se empieza en GPS
+    applyCompassIcon();
 #if ENABLE_BLE
+    // Avisar al movil de que es una pausa voluntaria (para que no vibre ni dé alarma)
+    if (bleClientConnected && charTX) {
+      std::string bye = "{\"t\":\"bye\"}\n";
+      charTX->setValue(bye);
+      charTX->notify();
+      delay(150);                        // da tiempo a que salga el aviso
+    }
     // Apagar Bluetooth de verdad
     BLEDevice::getAdvertising()->stop();
     BLEDevice::deinit(false);
@@ -1461,6 +1712,7 @@ void toggleAppMode()
     pendingCloseAlert = false;
     setNavWidgetsVisible(false);
     lv_obj_add_flag(muteBtn, LV_OBJ_FLAG_HIDDEN);   // <-- mute
+    lv_obj_add_flag(compassBtn, LV_OBJ_FLAG_HIDDEN);
     refreshSpeedLabel();
     refreshBatteryLabel();
     babyEnter();
@@ -1474,6 +1726,9 @@ void toggleAppMode()
     speedKmh = -1;
     setNavWidgetsVisible(true);
     lv_obj_clear_flag(muteBtn, LV_OBJ_FLAG_HIDDEN); // <-- mute
+    lv_obj_clear_flag(compassBtn, LV_OBJ_FLAG_HIDDEN);
+    compassMode = false;
+    applyCompassIcon();
     refreshDistanceLabel();
     refreshInstrLabel();
     refreshSpeedLabel();
@@ -1486,6 +1741,23 @@ void toggleAppMode()
   }
   Serial.printf("[HEAP] modo=%s libre=%u maxBloque=%u\n", appMode ? "lactancia" : "GPS",
                 (unsigned)ESP.getFreeHeap(), (unsigned)ESP.getMaxAllocHeap());
+}
+
+// Boton de brujula: alterna entre la pantalla de GPS y la de brujula (solo fuera de lactancia).
+void toggleCompassMode()
+{
+  if (appMode) return;
+  compassMode = !compassMode;
+  applyCompassIcon();
+  if (compassMode) {
+    showToast("Brujula");
+    compassInvalidate();                 // pinta la brujula
+  } else {
+    showToast("Navegacion");
+    updateArrow();                       // vuelve a pintar la navegacion (el estado se conserva)
+    refreshDistanceLabel();
+    refreshInstrLabel();
+  }
 }
 
 // ===========================================================================
@@ -1571,6 +1843,10 @@ void loop()
     pendingAppToggle = false;
     toggleAppMode();
   }
+  if (pendingCompassToggle) {
+    pendingCompassToggle = false;
+    toggleCompassMode();
+  }
 
   // Tramas del movil (JSON / iconos)
   phoneLinkPoll(onPhoneJson, onPhoneIcon);
@@ -1591,6 +1867,8 @@ void loop()
 
     updateBatteryReading();
     refreshBatteryLabel();
+
+    if (!appMode && compassMode) compassRefresh();   // detecta desconexion / datos caducados
 
     if (speedKmh >= 0 && millis() - lastGpsMillis > 12000) {
       speedKmh = -1;

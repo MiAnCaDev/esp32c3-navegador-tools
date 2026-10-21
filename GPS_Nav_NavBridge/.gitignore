@@ -42,3 +42,7 @@ firmware/build/
 *.elf
 *.bin
 *.map
+
+# Excepción: Permitir el archivo APK específico
+!apk
+!apk/app-debug.apk

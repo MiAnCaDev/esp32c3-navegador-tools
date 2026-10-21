@@ -28,6 +28,21 @@ object Prefs {
     fun lastExitTs(ctx: Context) = sp(ctx).getLong("exit_ts", 0L)
     fun setLastExitTs(ctx: Context, v: Long) = sp(ctx).edit().putLong("exit_ts", v).apply()
 
+    // --- Destino de la brújula ---
+    fun destination(ctx: Context): Destination.Dest? {
+        val p = sp(ctx)
+        val lat = p.getString("dest_lat", null)?.toDoubleOrNull() ?: return null
+        val lon = p.getString("dest_lon", null)?.toDoubleOrNull() ?: return null
+        return Destination.Dest(lat, lon, p.getString("dest_name", null) ?: "Destino")
+    }
+
+    fun setDestination(ctx: Context, d: Destination.Dest?) {
+        sp(ctx).edit().apply {
+            if (d == null) { remove("dest_lat"); remove("dest_lon"); remove("dest_name") }
+            else { putString("dest_lat", d.lat.toString()); putString("dest_lon", d.lon.toString()); putString("dest_name", d.name) }
+        }.apply()
+    }
+
     /** true mientras el usuario quiere el servicio en marcha (false tras pulsar "Parar"). */
     fun wantRunning(ctx: Context) = sp(ctx).getBoolean("want", false)
     fun setWantRunning(ctx: Context, v: Boolean) = sp(ctx).edit().putBoolean("want", v).apply()

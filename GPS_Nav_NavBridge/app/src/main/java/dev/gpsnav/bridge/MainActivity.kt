@@ -3,6 +3,7 @@ package dev.gpsnav.bridge
 import android.Manifest
 import android.app.Activity
 import android.app.AlertDialog
+import android.annotation.SuppressLint
 import android.content.ContentValues
 import android.content.Intent
 import android.content.pm.PackageManager
@@ -13,6 +14,9 @@ import android.graphics.drawable.ColorDrawable
 import android.graphics.drawable.Drawable
 import android.graphics.drawable.GradientDrawable
 import android.graphics.drawable.RippleDrawable
+import android.content.ClipboardManager
+import android.location.Location
+import android.location.LocationManager
 import android.net.Uri
 import android.os.Build
 import android.os.Bundle
@@ -54,6 +58,7 @@ class MainActivity : Activity() {
     private lateinit var preview: ImageView
     private lateinit var mainButton: Button
     private lateinit var deviceValue: TextView
+    private lateinit var destValue: TextView
     private lateinit var batteryHint: TextView
     private lateinit var rowPerms: Row
     private lateinit var rowNotif: Row
@@ -196,6 +201,7 @@ class MainActivity : Activity() {
         when {
             !running -> setChip("Detenido", R.color.text_muted, R.color.chip_neutral)
             connected -> setChip("● Conectado", R.color.ok, R.color.chip_ok)
+            link?.sleeping == true -> setChip("● En pausa", R.color.text_muted, R.color.chip_neutral)
             st.startsWith("Busc") || st.startsWith("Conect") || st.startsWith("Inici") ->
                 setChip("● Conectando…", R.color.warn, R.color.chip_warn)
             else -> setChip("● Sin conexión", R.color.bad, R.color.chip_bad)
@@ -206,6 +212,7 @@ class MainActivity : Activity() {
         speedValue.text = if (running) BridgeHub.lastSpeed else "—"
         BridgeHub.lastIcon?.let { preview.setImageBitmap(it) }
         deviceValue.text = deviceText()
+        destValue.text = destText()
 
         if (lastRunning != running) {
             lastRunning = running
@@ -309,6 +316,22 @@ class MainActivity : Activity() {
         dev.addView(deviceValue, lp(bottom = 10))
         dev.addView(button("Elegir ESP32", col(R.color.chip_neutral), col(R.color.text)) { pickDevice() }, lp(h = dp(48)))
 
+        // --- Destino de la brújula
+        val dst = card(root, "DESTINO DE LA BRÚJULA")
+        destValue = label("", 15f, col(R.color.text), true)
+        dst.addView(destValue, lp(bottom = 4))
+        dst.addView(
+            label("La flecha del ESP32 (botón de brújula) apunta a este destino en línea recta, " +
+                "usando el rumbo del GPS. Funciona en movimiento.", 12f, col(R.color.text_muted)),
+            lp(bottom = 10)
+        )
+        dst.addView(button("Usar mi ubicación actual", col(R.color.chip_neutral), col(R.color.text)) { useCurrentLocation() }, lp(h = dp(48), bottom = 8))
+        dst.addView(button("Pegar coordenadas o enlace", col(R.color.chip_neutral), col(R.color.text)) { pasteDestDialog() }, lp(h = dp(48), bottom = 8))
+        dst.addView(button("Quitar destino", col(R.color.chip_bad), col(R.color.bad)) {
+            Destination.set(this, null)
+            Toast.makeText(this, "Destino quitado", Toast.LENGTH_SHORT).show()
+        }, lp(h = dp(48)))
+
         // --- Opciones
         val opts = card(root, "ARRANQUE")
         switchRow(opts, "Iniciar al arrancar el móvil", "Se pone en marcha solo al encender el teléfono.",
@@ -399,6 +422,77 @@ class MainActivity : Activity() {
         } else {
             requestPermissions(arrayOf(Manifest.permission.ACCESS_BACKGROUND_LOCATION), 2)
         }
+    }
+
+    // ------------------------------------------------------------ destino de la brújula
+    private fun destText(): String {
+        val d = Destination.current ?: return "Ningún destino fijado"
+        return "${d.name}\n${"%.5f".format(Locale.US, d.lat)}, ${"%.5f".format(Locale.US, d.lon)}"
+    }
+
+    private fun askDestName(default: String, onOk: (String) -> Unit) {
+        val et = EditText(this).apply { setText(default); setSelectAllOnFocus(true) }
+        val box = LinearLayout(this).apply { setPadding(dp(20), dp(8), dp(20), 0); addView(et, lp()) }
+        AlertDialog.Builder(this).setTitle("Nombre del destino").setView(box)
+            .setPositiveButton("Fijar") { _, _ -> onOk(et.text.toString()) }
+            .setNegativeButton("Cancelar", null).show()
+    }
+
+    @SuppressLint("MissingPermission")
+    private fun useCurrentLocation() {
+        if (!granted(Manifest.permission.ACCESS_FINE_LOCATION)) {
+            Toast.makeText(this, "Primero concede los permisos", Toast.LENGTH_LONG).show(); return
+        }
+        var loc: Location? = Destination.freshLocation()
+        if (loc == null) {
+            val lm = getSystemService(LocationManager::class.java)
+            loc = listOf(LocationManager.GPS_PROVIDER, LocationManager.NETWORK_PROVIDER, LocationManager.PASSIVE_PROVIDER)
+                .mapNotNull { runCatching { lm.getLastKnownLocation(it) }.getOrNull() }
+                .filter { System.currentTimeMillis() - it.time < 120_000L }
+                .maxByOrNull { it.time }
+        }
+        if (loc == null) {
+            Toast.makeText(this, "Sin ubicación reciente. Pulsa Iniciar y espera a que haya GPS.", Toast.LENGTH_LONG).show()
+            return
+        }
+        val lat = loc.latitude; val lon = loc.longitude
+        askDestName("Mi ubicacion") { name ->
+            Destination.set(this, Destination.Dest(lat, lon, Destination.cleanName(name)))
+            Toast.makeText(this, "Destino fijado en tu ubicación", Toast.LENGTH_SHORT).show()
+        }
+    }
+
+    private fun pasteDestDialog() {
+        val coords = EditText(this).apply {
+            hint = "40.4168, -3.7038  o enlace de Google Maps"; minLines = 2
+        }
+        val name = EditText(this).apply { hint = "Nombre (opcional)"; setSingleLine(true) }
+        runCatching {   // si el portapapeles ya tiene coordenadas, se rellenan solas
+            val clip = getSystemService(ClipboardManager::class.java).primaryClip
+                ?.getItemAt(0)?.coerceToText(this)?.toString()
+            if (clip != null && DestParser.parse(clip) != null) coords.setText(clip)
+        }
+        val box = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL; setPadding(dp(20), dp(8), dp(20), 0)
+            addView(coords, lp()); addView(name, lp())
+        }
+        AlertDialog.Builder(this).setTitle("Fijar destino").setView(box)
+            .setPositiveButton("Fijar") { _, _ ->
+                val text = coords.text.toString()
+                val c = DestParser.parse(text)
+                when {
+                    c != null -> {
+                        Destination.set(this, Destination.Dest(c.first, c.second, Destination.cleanName(name.text.toString())))
+                        Toast.makeText(this, "Destino fijado", Toast.LENGTH_SHORT).show()
+                    }
+                    DestParser.isShortLink(text) -> Toast.makeText(
+                        this, "Los enlaces cortos necesitan internet. Abre el lugar en Maps y copia el enlace largo o las coordenadas.",
+                        Toast.LENGTH_LONG
+                    ).show()
+                    else -> Toast.makeText(this, "No se reconocen coordenadas", Toast.LENGTH_LONG).show()
+                }
+            }
+            .setNegativeButton("Cancelar", null).show()
     }
 
     private fun pickDevice() {
