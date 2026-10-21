@@ -78,7 +78,7 @@ object DestParser {
     private val patterns = listOf(
         Regex("""!3d($N)!4d($N)"""),
         Regex("""@($N),($N)"""),
-        Regex("""[?&](?:q|query|ll|destination|daddr|center)=($N)(?:,|%2C)\s*($N)""", RegexOption.IGNORE_CASE),
+        Regex("""[?&;](?:q|query|ll|destination|daddr|center)=($N)(?:,|%2C)\s*($N)""", RegexOption.IGNORE_CASE),
         Regex("""geo:($N),($N)""", RegexOption.IGNORE_CASE),
         Regex("""^\s*($N)\s*[,;]\s*($N)\s*${'$'}"""),
         Regex("""^\s*($N)\s+($N)\s*${'$'}"""),

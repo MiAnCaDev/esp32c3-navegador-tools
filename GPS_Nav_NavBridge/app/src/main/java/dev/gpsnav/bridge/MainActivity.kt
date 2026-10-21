@@ -36,6 +36,7 @@ import androidx.core.app.NotificationManagerCompat
 import androidx.core.content.FileProvider
 import dev.gpsnav.bridge.ble.DevicePicker
 import java.io.File
+import java.io.IOException
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
@@ -322,7 +323,8 @@ class MainActivity : Activity() {
         dst.addView(destValue, lp(bottom = 4))
         dst.addView(
             label("La flecha del ESP32 (botón de brújula) apunta a este destino en línea recta, " +
-                "usando el rumbo del GPS. Funciona en movimiento.", 12f, col(R.color.text_muted)),
+                "usando el rumbo del GPS. Funciona en movimiento. También puedes compartir un lugar " +
+                "desde Google Maps hacia esta app.", 12f, col(R.color.text_muted)),
             lp(bottom = 10)
         )
         dst.addView(button("Usar mi ubicación actual", col(R.color.chip_neutral), col(R.color.text)) { useCurrentLocation() }, lp(h = dp(48), bottom = 8))
@@ -364,6 +366,13 @@ class MainActivity : Activity() {
         settingsRow(about, "↗", col(R.color.primary), "Repositorio del proyecto", AppInfo.REPO_URL) { openUrl(AppInfo.REPO_URL) }
 
         setContentView(ScrollView(this).apply { addView(root) })
+        if (savedInstanceState == null) handleShareIntent(intent)   // lugar compartido desde Maps
+    }
+
+    override fun onNewIntent(intent: Intent) {
+        super.onNewIntent(intent)
+        setIntent(intent)
+        handleShareIntent(intent)
     }
 
     override fun onResume() { super.onResume(); lastRunning = null; ui.post(tick) }
@@ -430,9 +439,13 @@ class MainActivity : Activity() {
         return "${d.name}\n${"%.5f".format(Locale.US, d.lat)}, ${"%.5f".format(Locale.US, d.lon)}"
     }
 
-    private fun askDestName(default: String, onOk: (String) -> Unit) {
+    private fun askDestName(default: String, message: String? = null, onOk: (String) -> Unit) {
         val et = EditText(this).apply { setText(default); setSelectAllOnFocus(true) }
-        val box = LinearLayout(this).apply { setPadding(dp(20), dp(8), dp(20), 0); addView(et, lp()) }
+        val box = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL; setPadding(dp(20), dp(8), dp(20), 0)
+            if (message != null) addView(label(message, 13f, col(R.color.text_muted)), lp(bottom = 8))
+            addView(et, lp())
+        }
         AlertDialog.Builder(this).setTitle("Nombre del destino").setView(box)
             .setPositiveButton("Fijar") { _, _ -> onOk(et.text.toString()) }
             .setNegativeButton("Cancelar", null).show()
@@ -482,17 +495,69 @@ class MainActivity : Activity() {
                 val c = DestParser.parse(text)
                 when {
                     c != null -> {
-                        Destination.set(this, Destination.Dest(c.first, c.second, Destination.cleanName(name.text.toString())))
+                        Destination.set(this, Destination.Dest(c.first, c.second,
+                            Destination.cleanName(name.text.toString().ifBlank { LinkResolver.guessName(text) ?: "" })))
                         Toast.makeText(this, "Destino fijado", Toast.LENGTH_SHORT).show()
                     }
-                    DestParser.isShortLink(text) -> Toast.makeText(
-                        this, "Los enlaces cortos necesitan internet. Abre el lugar en Maps y copia el enlace largo o las coordenadas.",
-                        Toast.LENGTH_LONG
-                    ).show()
+                    text.contains("http", ignoreCase = true) -> resolveAndAsk(text)
                     else -> Toast.makeText(this, "No se reconocen coordenadas", Toast.LENGTH_LONG).show()
                 }
             }
             .setNegativeButton("Cancelar", null).show()
+    }
+
+    /** Lee un enlace de Google Maps (puede necesitar internet) y pide confirmar el destino. */
+    private fun resolveAndAsk(text: String) {
+        var cancelled = false
+        val wait = AlertDialog.Builder(this)
+            .setMessage("Leyendo la ubicación del enlace…")
+            .setNegativeButton("Cancelar") { _, _ -> cancelled = true }
+            .setOnCancelListener { cancelled = true }
+            .show()
+        Thread {
+            var result: LinkResolver.Result? = null
+            var error: String? = null
+            try {
+                result = LinkResolver.resolve(text)
+            } catch (e: IOException) {
+                error = "No hay conexión a internet (o Google no responde)."
+            } catch (e: Exception) {
+                error = "No se pudo leer el enlace."
+            }
+            runOnUiThread {
+                wait.dismiss()
+                if (cancelled) return@runOnUiThread
+                val r = result
+                if (r == null) {
+                    Toast.makeText(this, error ?: "No se encontraron coordenadas en ese enlace.", Toast.LENGTH_LONG).show()
+                } else {
+                    val msg = "%.5f, %.5f".format(Locale.US, r.lat, r.lon)
+                    askDestName(Destination.cleanName(r.name ?: ""), msg) { n ->
+                        Destination.set(this, Destination.Dest(r.lat, r.lon, Destination.cleanName(n)))
+                        Toast.makeText(this, "Destino fijado", Toast.LENGTH_SHORT).show()
+                    }
+                }
+            }
+        }.start()
+    }
+
+    /** Un lugar compartido desde Google Maps (o cualquier texto con coordenadas/enlace) llega aquí. */
+    private fun handleShareIntent(i: Intent?) {
+        if (i == null || i.action != Intent.ACTION_SEND) return
+        val text = i.getStringExtra(Intent.EXTRA_TEXT) ?: return
+        AppLog.i("UI", "Texto compartido con la app (${text.length} caracteres)")
+        val c = DestParser.parse(text)
+        if (c != null) {
+            askDestName(
+                Destination.cleanName(LinkResolver.guessName(text) ?: ""),
+                "%.5f, %.5f".format(Locale.US, c.first, c.second)
+            ) { n ->
+                Destination.set(this, Destination.Dest(c.first, c.second, Destination.cleanName(n)))
+                Toast.makeText(this, "Destino fijado", Toast.LENGTH_SHORT).show()
+            }
+        } else {
+            resolveAndAsk(text)
+        }
     }
 
     private fun pickDevice() {
