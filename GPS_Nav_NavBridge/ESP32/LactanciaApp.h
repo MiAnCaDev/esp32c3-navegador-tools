@@ -577,6 +577,44 @@ void buildBabyUI(lv_obj_t *scr)
   lv_obj_add_flag(bbCont, LV_OBJ_FLAG_HIDDEN);
 }
 
+// Recoloca la app segun la resolucion actual de la pantalla (se llama desde el .ino
+// al arrancar y cada vez que se gira la pantalla). En horizontal (280x240) deja
+// exactamente las mismas medidas de siempre; en vertical (240x280) estrecha los
+// botones y reparte la altura sobrante entre las filas.
+void babyLayout(int W, int H)
+{
+  const int BW  = W - 48;                       // 232 en horizontal, 192 en vertical
+  const int BH  = 34;
+  const int GAP = 6;
+  const int HW  = (BW - GAP) / 2;
+  const int EX  = (H > 240) ? (H - 240) / 2 : 0;   // altura sobrante (solo en vertical)
+
+  lv_obj_set_pos(bbCont, 44, 6);
+  lv_obj_set_size(bbCont, BW, H - 12);
+  lv_obj_set_pos(bbStatus, 0, 0);
+
+  lv_obj_set_pos(bbIzqBtn, 0, 16);         lv_obj_set_size(bbIzqBtn, HW, BH);
+  lv_obj_set_pos(bbDerBtn, HW + GAP, 16);  lv_obj_set_size(bbDerBtn, HW, BH);
+  lv_obj_set_pos(bbTomaFinBtn, 0, 16);     lv_obj_set_size(bbTomaFinBtn, BW, BH);
+  lv_obj_set_pos(bbTomaInfo, 2, 16 + BH + 4);
+
+  int y2 = 16 + BH + 4 + 18 + 10 + EX;
+  lv_obj_set_pos(bbSuenoBtn, 0, y2);       lv_obj_set_size(bbSuenoBtn, BW, BH);
+  lv_obj_set_pos(bbSuenoInfo, 2, y2 + BH + 4);
+
+  int y3 = y2 + BH + 4 + 18 + 10 + EX;
+  lv_obj_set_pos(bbPisBtn, 0, y3);         lv_obj_set_size(bbPisBtn, HW, BH);
+  lv_obj_set_pos(bbCacaBtn, HW + GAP, y3); lv_obj_set_size(bbCacaBtn, HW, BH);
+  lv_obj_set_pos(bbPanialInfo, 2, y3 + BH + 4);
+
+  // Si un texto no cabe en el ancho disponible, se desplaza en vez de salirse.
+  lv_obj_t *infos[3] = { bbTomaInfo, bbSuenoInfo, bbPanialInfo };
+  for (int i = 0; i < 3; i++) {
+    lv_obj_set_width(infos[i], BW - 2);
+    lv_label_set_long_mode(infos[i], LV_LABEL_LONG_SCROLL_CIRCULAR);
+  }
+}
+
 // ===========================================================================
 // API PUBLICA (llamar desde el .ino)
 // ===========================================================================

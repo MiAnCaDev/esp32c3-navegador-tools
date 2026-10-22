@@ -177,7 +177,8 @@ public:
       cfg.pin_rst  = PIN_LCD_RES;
       cfg.pin_busy = -1;
       cfg.memory_width  = 240;
-      cfg.memory_height = 280;
+      cfg.memory_height = 320;   // RAM real del ST7789 (240x320); la parte visible es 280 con offset_y=20.
+                                 // Con 280 las orientaciones giradas 180/270 salian desplazadas 40 px.
       cfg.panel_width   = 240;
       cfg.panel_height  = 280;
       cfg.offset_x = 0;
@@ -270,6 +271,13 @@ lv_obj_t *soundOnIcon    = nullptr;   // ondas de sonido (sonido activado)
 lv_obj_t *soundOffIcon   = nullptr;   // "X" (sonido desactivado)
 
 // --- Brujula: flecha hacia un destino fijado en el movil (solo en modo GPS/brujula) ---
+// --- Rotacion de pantalla (boton "rotar", siempre visible) ---
+lv_obj_t *rotateBtn      = nullptr;
+volatile uint8_t screenRot = 0;       // 0 = horizontal original; 1, 2, 3 = +90, +180, +270 grados
+volatile bool pendingRotate = false;
+static lv_disp_drv_t disp_drv;        // global: hace falta para cambiar la resolucion al girar
+static lv_disp_t    *lvDisp = nullptr;
+
 lv_obj_t *compassBtn     = nullptr;   // boton nuevo (visible solo en modo GPS y brujula)
 lv_obj_t *compassRing    = nullptr;   // aro del icono (ambar cuando la brujula esta activa)
 lv_obj_t *compassNeedle  = nullptr;   // aguja del icono
@@ -309,12 +317,22 @@ void my_touchpad_read(lv_indev_drv_t *indev_driver, lv_indev_data_t *data)
     //   pantalla_x = tactil_y
     //   pantalla_y = 239 - tactil_x
     // (formula calibrada tocando las esquinas reales de la pantalla)
-    int dispX = (int)touchY;
-    int dispY = 239 - (int)touchX;
+    // Con la pantalla girada (boton "rotar") las coordenadas cambian:
+    //   0: horizontal original   1: vertical (+90)   2: horizontal invertida (+180)   3: vertical (+270)
+    const int tx = (int)touchX, ty = (int)touchY;
+    int dispX, dispY;
+    switch (screenRot) {
+      case 1:  dispX = 239 - tx; dispY = 279 - ty; break;
+      case 2:  dispX = 279 - ty; dispY = tx;       break;
+      case 3:  dispX = tx;       dispY = ty;       break;
+      default: dispX = ty;       dispY = 239 - tx; break;
+    }
+    const int maxX = (int)lv_disp_get_hor_res(NULL) - 1;
+    const int maxY = (int)lv_disp_get_ver_res(NULL) - 1;
     if (dispX < 0) dispX = 0;
-    if (dispX > 279) dispX = 279;
+    if (dispX > maxX) dispX = maxX;
     if (dispY < 0) dispY = 0;
-    if (dispY > 239) dispY = 239;
+    if (dispY > maxY) dispY = maxY;
 
     data->state = LV_INDEV_STATE_PR;
     data->point.x = dispX;
@@ -1162,6 +1180,51 @@ void applyCompassIcon()
   lv_obj_set_style_line_color(compassNeedle, c, 0);
 }
 
+// Rotar: flecha circular (arco de 270 grados con punta en el extremo)
+static void buildRotateIcon(lv_obj_t *box)
+{
+  static lv_point_t arcPts[10];
+  static lv_point_t headPts[3];
+  const float c   = ICON_BOX / 2.0f;
+  const float rad = ICON_BOX / 2.0f - 4.0f;
+  for (int i = 0; i < 10; i++) {
+    float a = (60.0f + i * 30.0f) * (float)M_PI / 180.0f;     // 60..330 grados
+    arcPts[i].x = (lv_coord_t)lroundf(c + rad * cosf(a));
+    arcPts[i].y = (lv_coord_t)lroundf(c + rad * sinf(a));
+  }
+  // punta en el extremo del arco, siguiendo el sentido horario
+  float a  = 330.0f * (float)M_PI / 180.0f;
+  float px = c + rad * cosf(a), py = c + rad * sinf(a);
+  float tx = -sinf(a), ty = cosf(a);          // tangente
+  float nx = -ty,      ny = tx;               // normal
+  float bx = px - tx * 1.0f, by = py - ty * 1.0f;
+  headPts[0].x = (lv_coord_t)lroundf(bx + nx * 4.5f); headPts[0].y = (lv_coord_t)lroundf(by + ny * 4.5f);
+  headPts[1].x = (lv_coord_t)lroundf(px + tx * 5.0f); headPts[1].y = (lv_coord_t)lroundf(py + ty * 5.0f);
+  headPts[2].x = (lv_coord_t)lroundf(bx - nx * 4.5f); headPts[2].y = (lv_coord_t)lroundf(by - ny * 4.5f);
+
+  lv_obj_t *arc = lv_line_create(box);
+  lv_line_set_points(arc, arcPts, 10);
+  lv_obj_set_style_line_width(arc, 2, 0);
+  lv_obj_set_style_line_color(arc, lv_color_white(), 0);
+  lv_obj_set_style_line_rounded(arc, true, 0);
+  lv_obj_set_pos(arc, 0, 0);
+  lv_obj_clear_flag(arc, LV_OBJ_FLAG_CLICKABLE);
+
+  lv_obj_t *head = lv_line_create(box);
+  lv_line_set_points(head, headPts, 3);
+  lv_obj_set_style_line_width(head, 2, 0);
+  lv_obj_set_style_line_color(head, lv_color_white(), 0);
+  lv_obj_set_style_line_rounded(head, true, 0);
+  lv_obj_set_pos(head, 0, 0);
+  lv_obj_clear_flag(head, LV_OBJ_FLAG_CLICKABLE);
+}
+
+void rotateBtnEventCb(lv_event_t *e)
+{
+  if (lv_event_get_code(e) != LV_EVENT_CLICKED) return;
+  pendingRotate = true;   // se procesa en loop()
+}
+
 void compassBtnEventCb(lv_event_t *e)
 {
   if (lv_event_get_code(e) != LV_EVENT_CLICKED) return;
@@ -1179,6 +1242,45 @@ void muteBtnEventCb(lv_event_t *e)
 // ===========================================================================
 // CONSTRUCCION DE LA INTERFAZ
 // ===========================================================================
+// ===========================================================================
+// DISPOSICION SEGUN LA ORIENTACION (se llama al arrancar y al girar la pantalla)
+// ===========================================================================
+// Columna izquierda de 5 botones equidistantes (de arriba abajo):
+//   cambio lactancia | brujula/GPS | rotar | volumen | brillo
+// En modo lactancia se ocultan brujula y volumen y quedan 3 (arriba, centro y abajo).
+void applyLayout()
+{
+  const int W = (int)lv_disp_get_hor_res(NULL);
+  const int H = (int)lv_disp_get_ver_res(NULL);
+  const bool portrait = H > W;
+
+  const int step = (H - 4 - 44) / 4;                 // 48 en horizontal (H=240), 58 en vertical (H=280)
+  lv_obj_align(appBtn,     LV_ALIGN_TOP_LEFT,    2,  2);
+  lv_obj_align(compassBtn, LV_ALIGN_LEFT_MID,    2, -step);
+  lv_obj_align(rotateBtn,  LV_ALIGN_LEFT_MID,    2,  0);
+  lv_obj_align(muteBtn,    LV_ALIGN_LEFT_MID,    2,  step);
+  lv_obj_align(brightBtn,  LV_ALIGN_BOTTOM_LEFT, 2, -2);
+
+  // Contenido central: en vertical el area libre (a la derecha de los botones) es mas
+  // estrecha, asi que se desplaza a la derecha y se baja un poco para centrarlo.
+  const int dx = portrait ? 28 : 0;
+  const int dy = portrait ? 20 : 0;
+  lv_obj_align(arrowCanvas,   LV_ALIGN_TOP_MID, dx, 26 + dy);
+  lv_obj_align(distanceLabel, LV_ALIGN_TOP_MID, dx, 162 + dy);
+  lv_obj_align(instrLabel,    LV_ALIGN_TOP_MID, dx, 195 + dy);
+  if (portrait) {
+    lv_obj_set_width(instrLabel, W - 64);            // si no cabe, el texto se desplaza
+    lv_label_set_long_mode(instrLabel, LV_LABEL_LONG_SCROLL_CIRCULAR);
+    lv_obj_set_style_text_align(instrLabel, LV_TEXT_ALIGN_CENTER, 0);
+  } else {
+    lv_obj_set_width(instrLabel, LV_SIZE_CONTENT);
+    lv_label_set_long_mode(instrLabel, LV_LABEL_LONG_WRAP);
+  }
+
+  lv_obj_set_size(dimOverlay, W, H);
+  babyLayout(W, H);
+}
+
 void buildUI()
 {
   lv_obj_t *scr = lv_scr_act();
@@ -1230,6 +1332,7 @@ void buildUI()
   applyMuteIcon();
   compassBtn = makeIconButton(scr, LV_ALIGN_LEFT_MID, 2, -48, compassBtnEventCb, buildCompassIcon);
   applyCompassIcon();
+  rotateBtn  = makeIconButton(scr, LV_ALIGN_LEFT_MID, 2, 0, rotateBtnEventCb, buildRotateIcon);
 
   // --- App de lactancia (oculta por defecto, sustituye al "Proximamente") ---
   buildBabyUI(scr);
@@ -1246,12 +1349,13 @@ void buildUI()
   // --- Capa de "brillo" (siempre la última, para quedar por encima) ---
   dimOverlay = lv_obj_create(scr);
   lv_obj_remove_style_all(dimOverlay);
-  lv_obj_set_size(dimOverlay, screenWidth, screenHeight);
+  lv_obj_set_size(dimOverlay, lv_disp_get_hor_res(NULL), lv_disp_get_ver_res(NULL));
   lv_obj_set_pos(dimOverlay, 0, 0);
   lv_obj_set_style_bg_color(dimOverlay, lv_color_black(), 0);
   lv_obj_set_style_bg_opa(dimOverlay, 0, 0);
   lv_obj_clear_flag(dimOverlay, LV_OBJ_FLAG_CLICKABLE);
 
+  applyLayout();
   updateArrow();
 }
 
@@ -1766,6 +1870,24 @@ void toggleCompassMode()
   }
 }
 
+// Gira TODA la pantalla 90 grados (0 -> 90 -> 180 -> 270 -> 0). Se llama desde loop().
+// El giro se mantiene al cambiar entre GPS, brujula y lactancia. Al reiniciar el
+// dispositivo vuelve a la orientacion original (a proposito: asi, si algo fallase,
+// siempre se arranca en una orientacion conocida).
+void applyRotation(uint8_t r)
+{
+  screenRot = r & 3;
+  tft.waitDMA();
+  tft.setRotation(screenRot);                  // giro por hardware (sin coste de CPU ni RAM)
+  disp_drv.hor_res = tft.width();              // 280x240 en horizontal, 240x280 en vertical
+  disp_drv.ver_res = tft.height();
+  lv_disp_drv_update(lvDisp, &disp_drv);
+  applyLayout();                               // recoloca botones y contenido
+  lv_obj_invalidate(lv_scr_act());
+  Serial.printf("[ROT] giro=%u grados, resolucion %dx%d\n", (unsigned)screenRot * 90,
+                (int)lv_disp_get_hor_res(NULL), (int)lv_disp_get_ver_res(NULL));
+}
+
 // ===========================================================================
 // SETUP / LOOP
 // ===========================================================================
@@ -1805,13 +1927,12 @@ void setup()
   lv_init();
   lv_disp_draw_buf_init(&draw_buf, lvgl_buf, NULL, screenWidth * BUF_ROWS);
 
-  static lv_disp_drv_t disp_drv;
   lv_disp_drv_init(&disp_drv);
   disp_drv.hor_res = screenWidth;
   disp_drv.ver_res = screenHeight;
   disp_drv.flush_cb = my_disp_flush;
   disp_drv.draw_buf = &draw_buf;
-  lv_disp_drv_register(&disp_drv);
+  lvDisp = lv_disp_drv_register(&disp_drv);
 
   static lv_indev_drv_t indev_drv;
   lv_indev_drv_init(&indev_drv);
@@ -1852,6 +1973,10 @@ void loop()
   if (pendingCompassToggle) {
     pendingCompassToggle = false;
     toggleCompassMode();
+  }
+  if (pendingRotate) {
+    pendingRotate = false;
+    applyRotation((screenRot + 1) & 3);
   }
 
   // Tramas del movil (JSON / iconos)
