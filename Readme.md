@@ -46,7 +46,7 @@ static const WifiCred WIFI_LIST[] = {
 #define API_TOKEN  "CAMBIA_ESTE_TOKEN"   
 #define POLL_MS    60000                 // Frecuencia de consulta en reposo (ms)
 // ---------------------------------------------------------------------------
-
+```
 
 ## Variables ESP32
 
