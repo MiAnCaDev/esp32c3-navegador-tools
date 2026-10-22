@@ -871,16 +871,50 @@ void refreshDistanceLabel()
   lv_label_set_text(distanceLabel, navActive ? buf : "Sin ruta");
 }
 
+// ---------------------------------------------------------------------------
+// Texto de la instruccion / calle. Se adapta al ancho disponible:
+//   - cabe en 1 o 2 lineas  -> se muestra entero, centrado (hasta 2 lineas)
+//   - es mas largo          -> UNA linea que se desplaza para poder leerlo completo
+// Solo se reaplica si el texto cambia, para que el desplazamiento no se reinicie
+// cada vez que llega un mensaje con la misma instruccion.
+// ---------------------------------------------------------------------------
+static char instrFull[100] = "";
+
+static void instrApply(const char *txt)
+{
+  char buf[100];
+  strncpy(buf, txt, sizeof(buf) - 1);
+  buf[sizeof(buf) - 1] = 0;
+  strcpy(instrFull, buf);
+
+  const int len = (int)strlen(buf);
+  const int cap = (int)lv_obj_get_width(instrLabel) / 8;      // caracteres aprox. por linea (fuente 14)
+  if (cap > 0 && len > cap * 2 - 4) {
+    lv_label_set_long_mode(instrLabel, LV_LABEL_LONG_SCROLL_CIRCULAR);
+    lv_obj_set_height(instrLabel, 17);
+  } else {
+    lv_label_set_long_mode(instrLabel, LV_LABEL_LONG_DOT);
+    lv_obj_set_height(instrLabel, 34);
+  }
+  lv_label_set_text(instrLabel, buf);
+}
+
+void setInstrText(const char *txt)
+{
+  if (strcmp(instrFull, txt) == 0) return;
+  instrApply(txt);
+}
+
+void instrRelayout()          // tras girar la pantalla (cambia el ancho disponible)
+{
+  instrApply(instrFull);
+}
+
 void refreshInstrLabel()
 {
   if (compassMode && !appMode) return;
-  if (!navActive || navInstr.length() == 0) {
-    lv_label_set_text(instrLabel, "");
-  } else {
-    String s = navInstr;
-    if (s.length() > 28) s = s.substring(0, 27) + "...";
-    lv_label_set_text(instrLabel, s.c_str());
-  }
+  if (!navActive || navInstr.length() == 0) setInstrText("");
+  else                                      setInstrText(navInstr.c_str());
 }
 
 void refreshSpeedLabel()
@@ -1276,12 +1310,10 @@ void applyLayout()
   lv_obj_align(distanceLabel, LV_ALIGN_TOP_MID, dx, top + 136);
   lv_obj_align(instrLabel,    LV_ALIGN_TOP_MID, dx, top + 169);
 
-  // Texto de la calle/instruccion: del ancho del area libre, hasta 2 lineas centradas
-  // (si aun asi no cabe, se corta con "..."). Asi nunca invade los botones ni se sale.
+  // Texto de la calle/instruccion: del ancho del area libre; nunca invade los botones.
   lv_obj_set_width(instrLabel, W - FREE_X - 12);
-  lv_obj_set_height(instrLabel, 34);
-  lv_label_set_long_mode(instrLabel, LV_LABEL_LONG_DOT);
   lv_obj_set_style_text_align(instrLabel, LV_TEXT_ALIGN_CENTER, 0);
+  instrRelayout();                             // 1-2 lineas o texto en movimiento, segun el ancho
 
   lv_obj_set_size(dimOverlay, W, H);
   babyLayout(W, H);
@@ -1321,7 +1353,7 @@ void buildUI()
   lv_obj_set_style_text_color(instrLabel, lv_palette_main(LV_PALETTE_GREY), 0);
   lv_obj_set_style_text_font(instrLabel, &lv_font_montserrat_14, 0);
   lv_obj_align(instrLabel, LV_ALIGN_TOP_MID, 0, 195);
-  lv_label_set_text(instrLabel, "");
+  setInstrText("");
 
   // --- Velocidad (abajo a la derecha, pequeña) ---
   speedLabel = lv_label_create(scr);
@@ -1481,37 +1513,37 @@ void compassRefresh()
     case 1:
       compassDrawDash(grey);
       lv_label_set_text(distanceLabel, "---");
-      lv_label_set_text(instrLabel, "Sin conexion con el movil");
+      setInstrText("Sin conexion con el movil");
       break;
     case 2:
       compassDrawDash(grey);
       lv_label_set_text(distanceLabel, "---");
-      lv_label_set_text(instrLabel, "Sin datos del movil");
+      setInstrText("Sin datos del movil");
       break;
     case 3:
       compassDrawDash(grey);
       lv_label_set_text(distanceLabel, "---");
-      lv_label_set_text(instrLabel, "Ningun destino fijado");
+      setInstrText("Ningun destino fijado");
       break;
     case 4:
       compassDrawDash(grey);
       lv_label_set_text(distanceLabel, "---");
-      lv_label_set_text(instrLabel, "Sin senal GPS");
+      setInstrText("Sin senal GPS");
       break;
     case 5:
       compassDrawCheck(green);
       lv_label_set_text(distanceLabel, "Has llegado");
-      lv_label_set_text(instrLabel, destName);
+      setInstrText(destName);
       break;
     case 6:
       compassDrawDash(grey);
       lv_label_set_text(distanceLabel, dist);
-      lv_label_set_text(instrLabel, "Muevete para orientar");
+      setInstrText("Muevete para orientar");
       break;
     default:
       compassDrawArrow(destRelDeg, amber);
       lv_label_set_text(distanceLabel, dist);
-      lv_label_set_text(instrLabel, destName[0] ? destName : "Destino");
+      setInstrText(destName[0] ? destName : "Destino");
       break;
   }
   lv_obj_invalidate(arrowCanvas);
