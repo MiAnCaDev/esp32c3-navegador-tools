@@ -21,7 +21,7 @@ El proyecto se divide en las siguientes carpetas y componentes principales:
 | :--- | :--- |
 | **`GPS_Nav_Display`** | Versión que utiliza la aplicación de terceros **GadgetBridge** para enviar los datos de Google Maps. |
 | **`GPS_Nav_NavBridge`** | Versión con aplicación propia desarrollada para el proyecto. ¡Puedes descargar el APK directamente! |
-| **`Informacion adicional`** | Documentación y guías de configuración del hardware y software. |
+| **`Informacion adicional`** | Documentación, imágenes y guías de configuración del hardware y software. |
 | **`prueba_colores`** | Script de prueba para verificar la correcta visualización de colores en la pantalla. |
 | **`prueba_tactil`** | Script de prueba para comprobar el funcionamiento del panel táctil. |
 
