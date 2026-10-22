@@ -4,7 +4,7 @@ Bienvenido al repositorio del proyecto. Aquí encontrarás las herramientas de s
 
 La parte del bot de Lactancia es algo mas personal e individualizado, no afecta si solo quieres usar la parte de GPS pero está separado y se puede quitar.
 
-Placa de desarrollo ESP32-C3 con pantalla ST7789 de 1.69 pulgadas
+Placa de desarrollo ESP32-C3 con pantalla ST7789 de 1.69 pulgadas (Imágenes al final del Readme.md)
 
 ---
 
@@ -65,3 +65,9 @@ Hay ciertas variables que pueden modificar rápidamente el funcionamiento en el 
 ```
 
 Estas variables están disponibles en el esp32 con conexión con app propia. No todas están en la versión con GadgetBridge.
+
+## Imagenes ESP32
+
+![Imagen del dispositivo](Informacion%20adicional/Esp32%20-%202.avif)
+
+![Imagen del dispositivo - Esquema](Informacion%20adicional/Esp32%20-%201.avif)
