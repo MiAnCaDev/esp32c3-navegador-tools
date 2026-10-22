@@ -4,6 +4,8 @@ Bienvenido al repositorio del proyecto. Aquí encontrarás las herramientas de s
 
 La parte del bot de Lactancia es algo mas personal e individualizado, no afecta si solo quieres usar la parte de GPS pero está separado y se puede quitar.
 
+Placa de desarrollo ESP32-C3 con pantalla ST7789 de 1.69 pulgadas
+
 ---
 
 ## 🤖 Enlaces de Interés
@@ -44,3 +46,20 @@ static const WifiCred WIFI_LIST[] = {
 #define API_TOKEN  "CAMBIA_ESTE_TOKEN"   
 #define POLL_MS    60000                 // Frecuencia de consulta en reposo (ms)
 // ---------------------------------------------------------------------------
+
+
+## Variables ESP32
+
+Hay ciertas variables que pueden modificar rápidamente el funcionamiento en el ESP32
+```
+#define ENABLE_LACTANCIA true 
+  por defecto se muestra la parte de lactancia conectada al bot de telegram.
+#define SOUND_MUTED_BY_DEFAULT true 
+  por defecto el sonido está muteado y puedes activarlo desde el dispositivo.
+#define SHOW_SPEED false 
+  por defecto la velocidad no se muestra en el modo GPS
+
+#define ENABLE_BATTERY 0
+#define BATTERY_ADC_PIN 0
+  por defecto en el dispositivo en el que probó el funcionamiento no se puede medir la batería, pero se prepara para otros
+```
