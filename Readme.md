@@ -63,3 +63,5 @@ Hay ciertas variables que pueden modificar rápidamente el funcionamiento en el 
 #define BATTERY_ADC_PIN 0
   por defecto en el dispositivo en el que probó el funcionamiento no se puede medir la batería, pero se prepara para otros
 ```
+
+Estas variables están disponibles en el esp32 con conexión con app propia. No todas están en la versión con GadgetBridge.
