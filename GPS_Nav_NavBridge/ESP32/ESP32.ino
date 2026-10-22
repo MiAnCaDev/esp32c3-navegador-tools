@@ -61,6 +61,11 @@
 //   Se aplica en cada arranque: lo que elijas con el boton se pierde al reiniciar.
 #define SOUND_MUTED_BY_DEFAULT true
 
+// VELOCIDAD (numero pequeno abajo a la derecha, en modo GPS y brujula)
+//   false -> no se muestra nunca (pantalla mas limpia).
+//   true  -> se muestra si el movil la envia (la app NavBridge la saca del GPS del movil).
+#define SHOW_SPEED false
+
 // ============================================================================
 
 #define LGFX_USE_V1
@@ -881,7 +886,7 @@ void refreshInstrLabel()
 void refreshSpeedLabel()
 {
   // Si la app no manda velocidad (o estamos en modo app), el campo se oculta.
-  if (speedKmh < 0 || appMode) {
+  if (!SHOW_SPEED || speedKmh < 0 || appMode) {
     lv_obj_add_flag(speedLabel, LV_OBJ_FLAG_HIDDEN);
     return;
   }
@@ -1252,7 +1257,6 @@ void applyLayout()
 {
   const int W = (int)lv_disp_get_hor_res(NULL);
   const int H = (int)lv_disp_get_ver_res(NULL);
-  const bool portrait = H > W;
 
   const int step = (H - 4 - 44) / 4;                 // 48 en horizontal (H=240), 58 en vertical (H=280)
   lv_obj_align(appBtn,     LV_ALIGN_TOP_LEFT,    2,  2);
@@ -1261,21 +1265,23 @@ void applyLayout()
   lv_obj_align(muteBtn,    LV_ALIGN_LEFT_MID,    2,  step);
   lv_obj_align(brightBtn,  LV_ALIGN_BOTTOM_LEFT, 2, -2);
 
-  // Contenido central: en vertical el area libre (a la derecha de los botones) es mas
-  // estrecha, asi que se desplaza a la derecha y se baja un poco para centrarlo.
-  const int dx = portrait ? 28 : 0;
-  const int dy = portrait ? 20 : 0;
-  lv_obj_align(arrowCanvas,   LV_ALIGN_TOP_MID, dx, 26 + dy);
-  lv_obj_align(distanceLabel, LV_ALIGN_TOP_MID, dx, 162 + dy);
-  lv_obj_align(instrLabel,    LV_ALIGN_TOP_MID, dx, 195 + dy);
-  if (portrait) {
-    lv_obj_set_width(instrLabel, W - 64);            // si no cabe, el texto se desplaza
-    lv_label_set_long_mode(instrLabel, LV_LABEL_LONG_SCROLL_CIRCULAR);
-    lv_obj_set_style_text_align(instrLabel, LV_TEXT_ALIGN_CENTER, 0);
-  } else {
-    lv_obj_set_width(instrLabel, LV_SIZE_CONTENT);
-    lv_label_set_long_mode(instrLabel, LV_LABEL_LONG_WRAP);
-  }
+  // Contenido central (flecha, distancia y texto) centrado en el AREA LIBRE: la que queda
+  // a la derecha de la columna de botones (que ocupa ~54 px). Sin bateria ni velocidad
+  // en pantalla, no hay que reservar sitio en las esquinas.
+  const int FREE_X = 54;
+  const int dx  = FREE_X / 2;                  // desplazamiento desde el centro de la pantalla
+  const int top = (H - 188) / 2;               // pila: flecha 132 + 4 + distancia 28 + 5 + texto 16
+                                               //   -> 26 px en horizontal (H=240), 46 en vertical (H=280)
+  lv_obj_align(arrowCanvas,   LV_ALIGN_TOP_MID, dx, top);
+  lv_obj_align(distanceLabel, LV_ALIGN_TOP_MID, dx, top + 136);
+  lv_obj_align(instrLabel,    LV_ALIGN_TOP_MID, dx, top + 169);
+
+  // Texto de la calle/instruccion: del ancho del area libre, hasta 2 lineas centradas
+  // (si aun asi no cabe, se corta con "..."). Asi nunca invade los botones ni se sale.
+  lv_obj_set_width(instrLabel, W - FREE_X - 12);
+  lv_obj_set_height(instrLabel, 34);
+  lv_label_set_long_mode(instrLabel, LV_LABEL_LONG_DOT);
+  lv_obj_set_style_text_align(instrLabel, LV_TEXT_ALIGN_CENTER, 0);
 
   lv_obj_set_size(dimOverlay, W, H);
   babyLayout(W, H);
