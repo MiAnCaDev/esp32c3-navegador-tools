@@ -49,11 +49,24 @@ import java.util.Locale
 private const val MATCH = ViewGroup.LayoutParams.MATCH_PARENT
 private const val WRAP = ViewGroup.LayoutParams.WRAP_CONTENT
 
+// Pestañas de la barra inferior
+private const val TAB_HOME = 0
+private const val TAB_NAV = 1
+private const val TAB_LACT = 2
+private const val TAB_SETTINGS = 3
+
+// Códigos de las pantallas de archivos (exportar / importar configuración)
+private const val REQ_EXPORT = 4101
+private const val REQ_IMPORT = 4102
+
 /** Pantalla principal: estado, configuración inicial, dispositivo, opciones, logs y datos del desarrollador. */
 class MainActivity : Activity() {
 
     private class Row(val root: LinearLayout, val icon: TextView, val sub: TextView)
 
+    private lateinit var favCard: LinearLayout
+    private lateinit var favList: LinearLayout
+    private var favKey = ""
     private var lactSwitch: SwitchRef? = null
     private var lactUpdating = false
     private var rowLactNet: Row? = null
@@ -234,6 +247,7 @@ class MainActivity : Activity() {
         BridgeHub.lastIcon?.let { if (it !== shownIcon) { shownIcon = it; preview.setImageBitmap(it) } }
         deviceValue.setIfChanged(dev)
         destValue.setIfChanged(destText())
+        if (favKey != currentFavKey()) renderFavorites()      // la favorita "activa" sigue al destino actual
         refreshLactancia()
 
         if (lastRunning != running) {
@@ -266,6 +280,10 @@ class MainActivity : Activity() {
             else "Para tener velocidad GPS al arrancar el móvil solo"
         )
         batteryHint.visibility = if (battery) View.GONE else View.VISIBLE
+        // Imprescindible: permisos y acceso a notificaciones (batería y ubicación permanente son recomendados)
+        val critical = !(permissionsOk() && listener)
+        setupBanner.visibility = if (critical) View.VISIBLE else View.GONE
+        tabRefs.getOrNull(TAB_SETTINGS)?.dot?.visibility = if (critical) View.VISIBLE else View.GONE
     }
 
     private fun refresh() { refreshStatus(); refreshPerms() }
@@ -277,21 +295,39 @@ class MainActivity : Activity() {
     // ------------------------------------------------------------ construcción de la pantalla
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
-        val root = LinearLayout(this).apply {
-            orientation = LinearLayout.VERTICAL; setPadding(dp(16), dp(20), dp(16), dp(24))
-        }
+        // Cuatro páginas (una por pestaña de la barra inferior), cada una con su propio scroll
+        val home = page()
+        val nav = page()
+        val lactPage = page()
+        val settings = page()
+        pageTitle(nav, "Navegación", "Brújula, avisos de radar y pruebas de mensajes al ESP32")
+        pageTitle(lactPage, "Modo lactancia", "App de lactancia del ESP32")
+        pageTitle(settings, "Ajustes", "Arranque, configuración inicial y herramientas")
 
-        // Cabecera (el nombre del desarrollador va como subtítulo)
+        // Cabecera de Inicio (el nombre del desarrollador va como subtítulo)
         val header = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL; gravity = Gravity.CENTER_VERTICAL }
         header.addView(ImageView(this).apply { setImageResource(R.drawable.logo) }, LinearLayout.LayoutParams(dp(48), dp(48)))
         val titles = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL; setPadding(dp(12), 0, 0, 0) }
         titles.addView(label("Esp Nav", 24f, col(R.color.text), true))
         titles.addView(label("por ${AppInfo.DEVELOPER}", 13f, col(R.color.text_muted)))
         header.addView(titles)
-        root.addView(header, lp(bottom = 16))
+        home.addView(header, lp(bottom = 16))
+
+        // Aviso si falta algo imprescindible (la configuración inicial vive en Ajustes, al final)
+        setupBanner = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            background = ripple(rounded(col(R.color.chip_warn), 16, col(R.color.warn)))
+            setPadding(dp(16), dp(12), dp(16), dp(12))
+            isClickable = true
+            visibility = View.GONE
+        }
+        setupBanner.addView(label("Falta completar la configuración", 15f, col(R.color.text), true))
+        setupBanner.addView(label("Sin los permisos y el acceso a notificaciones la app no puede funcionar. Toca para revisarlo.",
+            13f, col(R.color.text_muted)))
+        home.addView(setupBanner, lp(bottom = 12))
 
         // --- Estado
-        val status = card(root)
+        val status = card(home)
         val top = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL; gravity = Gravity.CENTER_VERTICAL }
         val left = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
         chip = label("", 13f, col(R.color.text_muted), true).apply { setPadding(dp(12), dp(5), dp(12), dp(5)) }
@@ -325,7 +361,7 @@ class MainActivity : Activity() {
         status.addView(mainButton, lp(h = dp(52), top = 14))
 
         // --- Configuración inicial
-        val setup = card(root, "CONFIGURACIÓN INICIAL")
+        val setup = card(settings, "CONFIGURACIÓN INICIAL")
         rowPerms = settingsRow(setup, "✓", col(R.color.warn), "Permisos", "") { askPermissions() }
         divider(setup)
         rowNotif = settingsRow(setup, "✓", col(R.color.warn), "Acceso a notificaciones", "") {
@@ -343,13 +379,13 @@ class MainActivity : Activity() {
         setup.addView(batteryHint)
 
         // --- Dispositivo
-        val dev = card(root, "DISPOSITIVO ESP32")
+        val dev = card(home, "DISPOSITIVO ESP32")
         deviceValue = label("", 15f, col(R.color.text), true)
         dev.addView(deviceValue, lp(bottom = 10))
         dev.addView(button("Elegir ESP32", col(R.color.chip_neutral), col(R.color.text)) { pickDevice() }, lp(h = dp(48)))
 
         // --- Destino de la brújula
-        val dst = card(root, "DESTINO DE LA BRÚJULA")
+        val dst = card(nav, "DESTINO DE LA BRÚJULA")
         destValue = label("", 15f, col(R.color.text), true)
         dst.addView(destValue, lp(bottom = 4))
         dst.addView(
@@ -366,7 +402,7 @@ class MainActivity : Activity() {
         }, lp(h = dp(48)))
 
         // --- Opciones
-        val opts = card(root, "ARRANQUE")
+        val opts = card(settings, "ARRANQUE")
         switchRow(opts, "Iniciar al arrancar el móvil", "Se pone en marcha solo al encender el teléfono.",
             Prefs.autoStartBoot(this)) { Prefs.setAutoStartBoot(this, it) }
         divider(opts)
@@ -378,11 +414,34 @@ class MainActivity : Activity() {
         )
 
         // --- Herramientas
-        val tools = card(root, "HERRAMIENTAS")
+        val tools = card(settings, "HERRAMIENTAS")
         settingsRow(tools, "≡", col(R.color.primary), "Logs", "Descargar, compartir o borrar el registro") { logsDialog() }
+        divider(tools)
+        settingsRow(tools, "↑", col(R.color.primary), "Exportar configuración",
+            "Guarda ajustes, favoritas y destino en un archivo .json") { exportConfigDialog() }
+        divider(tools)
+        settingsRow(tools, "↓", col(R.color.primary), "Importar configuración",
+            "Restaura los ajustes desde un archivo .json (por ejemplo, en otro móvil)") { startImport() }
 
         // --- Avisos de radar
-        val rad = card(root, "AVISOS DE RADAR")
+        // --- Ubicaciones favoritas (hasta 8): al tocar una se fija como destino de la brújula
+        Favorites.load(this)
+        favCard = card(nav, "UBICACIONES FAVORITAS")
+        favList = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
+        favCard.addView(favList, lp(bottom = 8))
+        favCard.addView(button("Añadir (enlace o coordenadas)", col(R.color.chip_neutral), col(R.color.text)) {
+            if (Favorites.list().size >= Favorites.MAX)
+                Toast.makeText(this, "Ya tienes ${Favorites.MAX} favoritas. Elimina alguna para añadir otra.", Toast.LENGTH_LONG).show()
+            else pasteDestDialog("Nueva favorita", "Guardar") { la, lo, n -> saveFavorite(la, lo, n) }
+        }, lp(h = dp(48), bottom = 8))
+        favCard.addView(button("Guardar mi ubicación actual", col(R.color.chip_neutral), col(R.color.text)) {
+            if (Favorites.list().size >= Favorites.MAX)
+                Toast.makeText(this, "Ya tienes ${Favorites.MAX} favoritas. Elimina alguna para añadir otra.", Toast.LENGTH_LONG).show()
+            else useCurrentLocation(asFavorite = true)
+        }, lp(h = dp(48)))
+        renderFavorites()
+
+        val rad = card(nav, "AVISOS DE RADAR")
         switchRow(rad, "Avisar de radares", "Alerta roja en el ESP32 al acercarte a un radar fijo o de tramo (con el ESP32 conectado).",
             RadarConfig.current.enabled) { RadarConfig.save(this, RadarConfig.current.copy(enabled = it)) }
         divider(rad)
@@ -408,7 +467,7 @@ class MainActivity : Activity() {
         )
 
         // --- Modo lactancia (ajustes que viven en el ESP32)
-        val lact = card(root, "MODO LACTANCIA")
+        val lact = card(lactPage, "MODO LACTANCIA")
         lactSwitch = switchRow(lact, "Habilitar modo lactancia en el ESP32",
             EspConfig.statusText(), EspConfig.shownLact()) { on ->
             if (!lactUpdating) Toast.makeText(this, EspConfig.requestLact(on), Toast.LENGTH_LONG).show()
@@ -424,7 +483,7 @@ class MainActivity : Activity() {
         )
 
         // --- Pruebas del ESP32
-        val tests = card(root, "PRUEBAS DEL ESP32")
+        val tests = card(nav, "PRUEBAS DEL ESP32")
         tests.addView(
             label("Mandan datos de prueba al ESP32 para ver cómo se dibujan. Necesitas tener la app iniciada y el " +
                 "ESP32 conectado. Duran unos ${TestSignals.GPS_SECONDS} s y después se restaura lo real.",
@@ -436,7 +495,7 @@ class MainActivity : Activity() {
         tests.addView(button("Probar aviso de radar", col(R.color.chip_neutral), col(R.color.text)) { testRadarDialog() }, lp(h = dp(48)))
 
         // --- Acerca de
-        val about = card(root, "ACERCA DE")
+        val about = card(settings, "ACERCA DE")
         val aboutTop = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL; gravity = Gravity.CENTER_VERTICAL }
         aboutTop.addView(ImageView(this).apply { setImageResource(R.drawable.logo) }, LinearLayout.LayoutParams(dp(44), dp(44)))
         val aboutText = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL; setPadding(dp(12), 0, 0, 0) }
@@ -450,7 +509,20 @@ class MainActivity : Activity() {
         divider(about)
         settingsRow(about, "↗", col(R.color.primary), "Repositorio del proyecto", AppInfo.REPO_URL) { openUrl(AppInfo.REPO_URL) }
 
-        setContentView(ScrollView(this).apply { addView(root) })
+        // Orden de Ajustes: Arranque, Configuración inicial, Herramientas, Acerca de
+        run { val lpS = setup.layoutParams; settings.removeView(setup); settings.addView(setup, settings.indexOfChild(tools), lpS) }
+        setupBanner.setOnClickListener { showTab(TAB_SETTINGS, scrollTo = setup) }
+
+        // Contenedor: páginas arriba (solo una visible) y barra de pestañas abajo
+        scrolls = listOf(home, nav, lactPage, settings).map { pg -> ScrollView(this).apply { addView(pg); visibility = View.GONE } }
+        val frame = FrameLayout(this)
+        scrolls.forEach { frame.addView(it, FrameLayout.LayoutParams(MATCH, MATCH)) }
+        val shell = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
+        shell.addView(frame, lp(h = 0, weight = 1f))
+        shell.addView(buildTabBar())
+        setContentView(shell)
+        showTab(savedInstanceState?.getInt("tab") ?: TAB_HOME)
+
         if (savedInstanceState == null) handleShareIntent(intent)   // lugar compartido desde Maps
     }
 
@@ -519,12 +591,23 @@ class MainActivity : Activity() {
     }
 
     // ------------------------------------------------------------ destino de la brújula
+    private fun fixDestination(lat: Double, lon: Double, name: String) {
+        Destination.set(this, Destination.Dest(lat, lon, Destination.cleanName(name)))
+        Toast.makeText(this, "Destino fijado", Toast.LENGTH_SHORT).show()
+    }
+
+    private fun saveFavorite(lat: Double, lon: Double, name: String) {
+        val err = Favorites.add(this, name.ifBlank { "Favorita" }, lat, lon)
+        Toast.makeText(this, err ?: "Guardada en favoritas (${Favorites.list().size}/${Favorites.MAX})", Toast.LENGTH_LONG).show()
+        renderFavorites()
+    }
+
     private fun destText(): String {
         val d = Destination.current ?: return "Ningún destino fijado"
         return "${d.name}\n${"%.5f".format(Locale.US, d.lat)}, ${"%.5f".format(Locale.US, d.lon)}"
     }
 
-    private fun askDestName(default: String, message: String? = null, onOk: (String) -> Unit) {
+    private fun askDestName(default: String, message: String? = null, okLabel: String = "Fijar", onOk: (String) -> Unit) {
         val et = EditText(this).apply { setText(default); setSelectAllOnFocus(true) }
         val box = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL; setPadding(dp(20), dp(8), dp(20), 0)
@@ -532,12 +615,12 @@ class MainActivity : Activity() {
             addView(et, lp())
         }
         AlertDialog.Builder(this).setTitle("Nombre del destino").setView(box)
-            .setPositiveButton("Fijar") { _, _ -> onOk(et.text.toString()) }
+            .setPositiveButton(okLabel) { _, _ -> onOk(et.text.toString()) }
             .setNegativeButton("Cancelar", null).show()
     }
 
     @SuppressLint("MissingPermission")
-    private fun useCurrentLocation() {
+    private fun useCurrentLocation(asFavorite: Boolean = false) {
         if (!granted(Manifest.permission.ACCESS_FINE_LOCATION)) {
             Toast.makeText(this, "Primero concede los permisos", Toast.LENGTH_LONG).show(); return
         }
@@ -554,13 +637,24 @@ class MainActivity : Activity() {
             return
         }
         val lat = loc.latitude; val lon = loc.longitude
-        askDestName("Mi ubicacion") { name ->
-            Destination.set(this, Destination.Dest(lat, lon, Destination.cleanName(name)))
-            Toast.makeText(this, "Destino fijado en tu ubicación", Toast.LENGTH_SHORT).show()
+        if (asFavorite) {
+            askDestName("Mi ubicacion", okLabel = "Guardar") { name -> saveFavorite(lat, lon, name) }
+        } else {
+            askDestName("Mi ubicacion") { name ->
+                Destination.set(this, Destination.Dest(lat, lon, Destination.cleanName(name)))
+                Toast.makeText(this, "Destino fijado en tu ubicación", Toast.LENGTH_SHORT).show()
+            }
         }
     }
 
-    private fun pasteDestDialog() {
+    /**
+     * Pegar coordenadas o un enlace de Google Maps + nombre. Por defecto fija el destino; para las favoritas se pasa
+     * otro título/botón y otra acción ([onPicked] recibe latitud, longitud y el nombre escrito o adivinado).
+     */
+    private fun pasteDestDialog(
+        title: String = "Fijar destino", okLabel: String = "Fijar",
+        onPicked: (Double, Double, String) -> Unit = { la, lo, n -> fixDestination(la, lo, n) }
+    ) {
         val coords = EditText(this).apply {
             hint = "40.4168, -3.7038  o enlace de Google Maps"; minLines = 2
         }
@@ -574,17 +668,13 @@ class MainActivity : Activity() {
             orientation = LinearLayout.VERTICAL; setPadding(dp(20), dp(8), dp(20), 0)
             addView(coords, lp()); addView(name, lp())
         }
-        AlertDialog.Builder(this).setTitle("Fijar destino").setView(box)
-            .setPositiveButton("Fijar") { _, _ ->
+        AlertDialog.Builder(this).setTitle(title).setView(box)
+            .setPositiveButton(okLabel) { _, _ ->
                 val text = coords.text.toString()
                 val c = DestParser.parse(text)
                 when {
-                    c != null -> {
-                        Destination.set(this, Destination.Dest(c.first, c.second,
-                            Destination.cleanName(name.text.toString().ifBlank { LinkResolver.guessName(text) ?: "" })))
-                        Toast.makeText(this, "Destino fijado", Toast.LENGTH_SHORT).show()
-                    }
-                    text.contains("http", ignoreCase = true) -> resolveAndAsk(text)
+                    c != null -> onPicked(c.first, c.second, name.text.toString().ifBlank { LinkResolver.guessName(text) ?: "" })
+                    text.contains("http", ignoreCase = true) -> resolveAndAsk(text, okLabel, onPicked)
                     else -> Toast.makeText(this, "No se reconocen coordenadas", Toast.LENGTH_LONG).show()
                 }
             }
@@ -592,7 +682,10 @@ class MainActivity : Activity() {
     }
 
     /** Lee un enlace de Google Maps (puede necesitar internet) y pide confirmar el destino. */
-    private fun resolveAndAsk(text: String) {
+    private fun resolveAndAsk(
+        text: String, okLabel: String = "Fijar",
+        onPicked: (Double, Double, String) -> Unit = { la, lo, n -> fixDestination(la, lo, n) }
+    ) {
         var cancelled = false
         val wait = AlertDialog.Builder(this)
             .setMessage("Leyendo la ubicación del enlace…")
@@ -617,10 +710,7 @@ class MainActivity : Activity() {
                     Toast.makeText(this, error ?: "No se encontraron coordenadas en ese enlace.", Toast.LENGTH_LONG).show()
                 } else {
                     val msg = "%.5f, %.5f".format(Locale.US, r.lat, r.lon)
-                    askDestName(Destination.cleanName(r.name ?: ""), msg) { n ->
-                        Destination.set(this, Destination.Dest(r.lat, r.lon, Destination.cleanName(n)))
-                        Toast.makeText(this, "Destino fijado", Toast.LENGTH_SHORT).show()
-                    }
+                    askDestName(Destination.cleanName(r.name ?: ""), msg, okLabel) { n -> onPicked(r.lat, r.lon, n) }
                 }
             }
         }.start()
@@ -631,6 +721,7 @@ class MainActivity : Activity() {
         if (i == null || i.action != Intent.ACTION_SEND) return
         val text = i.getStringExtra(Intent.EXTRA_TEXT) ?: return
         AppLog.i("UI", "Texto compartido con la app (${text.length} caracteres)")
+        showTab(TAB_NAV)                       // el destino de la brújula está en Navegación
         val c = DestParser.parse(text)
         if (c != null) {
             askDestName(
@@ -664,6 +755,228 @@ class MainActivity : Activity() {
         }
         if (Build.VERSION.SDK_INT >= 33) p += Manifest.permission.POST_NOTIFICATIONS
         requestPermissions(p.toTypedArray(), 1)
+    }
+
+    // ------------------------------------------------------------ exportar / importar configuración
+    private var exportSecrets = false
+
+    private fun exportConfigDialog() {
+        if (!ConfigBackup.hasSecrets()) { startExport(false); return }
+        AlertDialog.Builder(this).setTitle("Exportar configuración")
+            .setMessage("Hay una clave de WiFi o un token guardados. ¿Los incluyo en el archivo? Se escribirían en texto " +
+                "plano: guárdalo en un sitio de confianza. Sin claves tendrás que volver a escribirlas en el otro móvil.")
+            .setPositiveButton("Incluir claves") { _, _ -> startExport(true) }
+            .setNeutralButton("Sin claves") { _, _ -> startExport(false) }
+            .setNegativeButton("Cancelar", null).show()
+    }
+
+    private fun startExport(secrets: Boolean) {
+        exportSecrets = secrets
+        val i = Intent(Intent.ACTION_CREATE_DOCUMENT).apply {
+            addCategory(Intent.CATEGORY_OPENABLE); type = "application/json"
+            putExtra(Intent.EXTRA_TITLE, ConfigBackup.fileName())
+        }
+        try { startActivityForResult(i, REQ_EXPORT) }
+        catch (e: Exception) { Toast.makeText(this, "No hay ninguna app para guardar archivos.", Toast.LENGTH_LONG).show() }
+    }
+
+    private fun startImport() {
+        val i = Intent(Intent.ACTION_OPEN_DOCUMENT).apply { addCategory(Intent.CATEGORY_OPENABLE); type = "*/*" }
+        try { startActivityForResult(i, REQ_IMPORT) }
+        catch (e: Exception) { Toast.makeText(this, "No hay ninguna app para elegir archivos.", Toast.LENGTH_LONG).show() }
+    }
+
+    @Suppress("DEPRECATION")
+    override fun onActivityResult(requestCode: Int, resultCode: Int, data: Intent?) {
+        super.onActivityResult(requestCode, resultCode, data)
+        if (resultCode != RESULT_OK) return
+        val uri = data?.data ?: return
+        when (requestCode) {
+            REQ_EXPORT -> writeConfig(uri)
+            REQ_IMPORT -> readConfig(uri)
+        }
+    }
+
+    private fun writeConfig(uri: Uri) {
+        try {
+            val text = ConfigBackup.export(this, exportSecrets)
+            contentResolver.openOutputStream(uri, "wt")!!.use { it.write(text.toByteArray(Charsets.UTF_8)) }
+            AppLog.i("UI", "Configuración exportada (claves: $exportSecrets)")
+            Toast.makeText(this, "Configuración exportada" + if (exportSecrets) " (con claves)" else "", Toast.LENGTH_LONG).show()
+        } catch (e: Exception) {
+            AppLog.e("UI", "No se pudo exportar la configuración", e)
+            Toast.makeText(this, "No se pudo guardar el archivo (${e.message})", Toast.LENGTH_LONG).show()
+        }
+    }
+
+    private fun readConfig(uri: Uri) {
+        val json = try {
+            ConfigBackup.parse(contentResolver.openInputStream(uri)!!.use { ConfigBackup.readText(it) })
+        } catch (e: IllegalArgumentException) {
+            Toast.makeText(this, e.message, Toast.LENGTH_LONG).show(); return
+        } catch (e: Exception) {
+            Toast.makeText(this, "No se pudo leer el archivo (${e.message})", Toast.LENGTH_LONG).show(); return
+        }
+        val lines = ConfigBackup.describe(json)
+        if (lines.isEmpty()) { Toast.makeText(this, "El archivo no contiene ajustes que importar.", Toast.LENGTH_LONG).show(); return }
+        AlertDialog.Builder(this).setTitle("Importar configuración")
+            .setMessage("Se sustituirá lo siguiente por lo que hay en el archivo:\n\n• " + lines.joinToString("\n• ") +
+                "\n\nLo demás no cambia. No se envía nada al ESP32: los ajustes de lactancia se mandan desde su pantalla.")
+            .setPositiveButton("Importar") { _, _ ->
+                val r = ConfigBackup.apply(this, json)
+                if (r.deviceChanged) BridgeHub.link?.reconnect()      // cambia de ESP32 al instante si el servicio está en marcha
+                AppLog.i("UI", "Configuración importada: ${r.lines.joinToString("; ")}")
+                Toast.makeText(this, "Configuración importada", Toast.LENGTH_LONG).show()
+                recreate()                                           // reconstruye la pantalla con los valores nuevos
+            }
+            .setNegativeButton("Cancelar", null).show()
+    }
+
+    // ------------------------------------------------------------ ubicaciones favoritas
+    /** Lo que identifica el estado visible de la lista: favoritas guardadas + destino actual (para marcar la activa). */
+    private fun currentFavKey(): String {
+        val d = Destination.current
+        return "${Favorites.version}|${d?.lat}|${d?.lon}"
+    }
+
+    private fun renderFavorites() {
+        favKey = currentFavKey()
+        val n = Favorites.list().size
+        (favCard.getChildAt(0) as? TextView)?.text = "UBICACIONES FAVORITAS ($n/${Favorites.MAX})"
+        favList.removeAllViews()
+        if (n == 0) {
+            favList.addView(label("Aún no hay favoritas. Añade una pegando un enlace de Google Maps o unas coordenadas, " +
+                "ponle un nombre y, al tocarla aquí, se fija como destino de la brújula.", 13f, col(R.color.text_muted)))
+            return
+        }
+        val dest = Destination.current
+        Favorites.list().forEachIndexed { i, f ->
+            val active = dest != null && Favorites.at(dest.lat, dest.lon) === f
+            val row = LinearLayout(this).apply {
+                orientation = LinearLayout.HORIZONTAL; gravity = Gravity.CENTER_VERTICAL
+                setPadding(0, dp(8), 0, dp(8))
+                background = ripple(ColorDrawable(Color.TRANSPARENT))
+                isClickable = true
+                setOnClickListener {
+                    Destination.set(this@MainActivity, Destination.Dest(f.lat, f.lon, f.name))
+                    Toast.makeText(this@MainActivity, "Destino: ${f.name}", Toast.LENGTH_SHORT).show()
+                    renderFavorites()
+                }
+                setOnLongClickListener { favMenu(i, f); true }
+            }
+            val star = label(if (active) "✓" else "★", 14f, Color.WHITE, true).apply {
+                gravity = Gravity.CENTER; background = circle(col(if (active) R.color.ok else R.color.primary))
+            }
+            row.addView(star, LinearLayout.LayoutParams(dp(30), dp(30)))
+            val mid = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL; setPadding(dp(12), 0, dp(8), 0) }
+            mid.addView(label(f.name, 15f, col(R.color.text), true))
+            mid.addView(label(
+                if (active) "Destino activo" else "${"%.5f".format(Locale.US, f.lat)}, ${"%.5f".format(Locale.US, f.lon)}",
+                13f, col(if (active) R.color.ok else R.color.text_muted)))
+            row.addView(mid, lp(w = 0, weight = 1f))
+            row.addView(label("⋮", 22f, col(R.color.text_muted)).apply {
+                gravity = Gravity.CENTER; setPadding(dp(10), 0, dp(6), 0)
+                setOnClickListener { favMenu(i, f) }
+            }, LinearLayout.LayoutParams(WRAP, dp(40)))
+            favList.addView(row, lp())
+            if (i < n - 1) divider(favList)
+        }
+    }
+
+    private fun favMenu(index: Int, f: Favorites.Fav) {
+        AlertDialog.Builder(this).setTitle(f.name)
+            .setItems(arrayOf("Renombrar", "Eliminar")) { _, which ->
+                if (which == 0) {
+                    val d = Destination.current
+                    val wasActive = d != null && Favorites.at(d.lat, d.lon) === f      // ¿es el destino en uso?
+                    askDestName(f.name, null, "Guardar") { nn ->
+                        Favorites.rename(this, index, nn)
+                        if (wasActive) Destination.set(this, Destination.Dest(f.lat, f.lon, Destination.cleanName(nn)))   // el ESP32 ve el nombre nuevo
+                        renderFavorites()
+                    }
+                } else {
+                    AlertDialog.Builder(this).setMessage("¿Eliminar «${f.name}» de favoritas?")
+                        .setPositiveButton("Eliminar") { _, _ -> Favorites.remove(this, index); renderFavorites() }
+                        .setNegativeButton("Cancelar", null).show()
+                }
+            }
+            .setNegativeButton("Cancelar", null).show()
+    }
+
+    // ------------------------------------------------------------ pestañas (barra inferior)
+    private class TabRef(val root: LinearLayout, val pill: FrameLayout, val glyph: TextView, val label: TextView, val dot: View)
+
+    private val tabNames = listOf("Inicio", "Navegación", "Lactancia", "Ajustes")
+    private val tabGlyphs = listOf("🏠", "🧭", "🍼", "⚙️")
+    private lateinit var scrolls: List<ScrollView>
+    private lateinit var setupBanner: LinearLayout
+    private val tabRefs = ArrayList<TabRef>()
+    private var currentTab = TAB_HOME
+
+    private fun page() = LinearLayout(this).apply {
+        orientation = LinearLayout.VERTICAL; setPadding(dp(16), dp(20), dp(16), dp(16))
+    }
+
+    private fun pageTitle(p: LinearLayout, title: String, subtitle: String) {
+        val box = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
+        box.addView(label(title, 26f, col(R.color.text), true))
+        box.addView(label(subtitle, 13f, col(R.color.text_muted)))
+        p.addView(box, lp(bottom = 16))
+    }
+
+    private fun buildTabBar(): View {
+        val bar = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL; setBackgroundColor(col(R.color.surface))
+            setPadding(dp(4), dp(8), dp(4), dp(8))
+        }
+        tabRefs.clear()
+        for (i in tabNames.indices) {
+            val tab = LinearLayout(this).apply {
+                orientation = LinearLayout.VERTICAL; gravity = Gravity.CENTER_HORIZONTAL
+                background = ripple(ColorDrawable(Color.TRANSPARENT)); isClickable = true
+                setOnClickListener { showTab(i) }
+            }
+            val pill = FrameLayout(this)
+            val glyph = TextView(this).apply { text = tabGlyphs[i]; setTextSize(TypedValue.COMPLEX_UNIT_SP, 19f); gravity = Gravity.CENTER }
+            pill.addView(glyph, FrameLayout.LayoutParams(MATCH, MATCH, Gravity.CENTER))
+            val dot = View(this).apply { background = circle(col(R.color.bad)); visibility = View.GONE }
+            pill.addView(dot, FrameLayout.LayoutParams(dp(9), dp(9), Gravity.TOP or Gravity.END).apply {
+                topMargin = dp(3); rightMargin = dp(12)
+            })
+            tab.addView(pill, LinearLayout.LayoutParams(dp(60), dp(32)))
+            val lbl = label(tabNames[i], 11f, col(R.color.text_muted)).apply { gravity = Gravity.CENTER }
+            tab.addView(lbl, lp(top = 2))
+            bar.addView(tab, lp(w = 0, weight = 1f))
+            tabRefs.add(TabRef(tab, pill, glyph, lbl, dot))
+        }
+        val wrap = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
+        wrap.addView(View(this).apply { setBackgroundColor(col(R.color.stroke)) }, lp(h = 1))
+        wrap.addView(bar)
+        return wrap
+    }
+
+    private fun showTab(i: Int, scrollTo: View? = null) {
+        currentTab = i
+        scrolls.forEachIndexed { k, sv -> sv.visibility = if (k == i) View.VISIBLE else View.GONE }
+        val tint = (col(R.color.primary) and 0x00FFFFFF) or (0x26 shl 24)
+        tabRefs.forEachIndexed { k, t ->
+            val sel = k == i
+            t.pill.background = if (sel) rounded(tint, 16) else null     // "píldora" detrás del icono de la pestaña activa
+            t.glyph.alpha = if (sel) 1f else 0.55f
+            t.label.setTextColor(col(if (sel) R.color.primary else R.color.text_muted))
+            t.label.setTypeface(null, if (sel) Typeface.BOLD else Typeface.NORMAL)
+        }
+        if (scrollTo != null) scrolls[i].post { scrolls[i].smoothScrollTo(0, scrollTo.top) }
+    }
+
+    @Suppress("DEPRECATION")
+    override fun onBackPressed() {
+        if (currentTab != TAB_HOME) showTab(TAB_HOME) else super.onBackPressed()   // atrás vuelve primero a Inicio
+    }
+
+    override fun onSaveInstanceState(outState: Bundle) {
+        super.onSaveInstanceState(outState)
+        outState.putInt("tab", currentTab)
     }
 
     // ------------------------------------------------------------ modo lactancia (ajustes del ESP32)

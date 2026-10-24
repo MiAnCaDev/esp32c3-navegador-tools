@@ -46,6 +46,26 @@ En `LactanciaApp.h` (solo cambian las funciones de red y el texto de estado; el 
   que se quedaba corto si el servidor añadía campos (una respuesta 200 correcta contaba como error).
 - Se siguen las redirecciones 301/302 y los tiempos pasan de 4/5 s a 6/8 s.
 
+## Pantallas de la app (barra de pestañas inferior)
+- **Inicio**: Iniciar/Parar con el estado y la velocidad, y justo debajo el dispositivo ESP32. Si falta algún permiso imprescindible
+  sale un aviso que lleva directo a Ajustes (y la pestaña Ajustes muestra un punto rojo).
+- **Navegación**: destino de la brújula, ubicaciones favoritas (hasta 8), avisos de radar y pruebas de mensajes al ESP32.
+- **Lactancia**: habilitar el modo y servidor/WiFi del ESP32.
+- **Ajustes**: arranque, configuración inicial, herramientas (logs) y acerca de.
+"Atrás" desde cualquier pestaña vuelve primero a Inicio; la pestaña activa se recuerda al girar la pantalla.
+
+## Ubicaciones favoritas (brújula)
+Hasta 8, en Navegación (`Favorites.kt`). "Añadir" admite un enlace de Google Maps o coordenadas (como "Pegar coordenadas o enlace") más
+un nombre; "Guardar mi ubicación actual" usa el GPS. Tocar una la fija como destino de la brújula (se marca como "Destino activo" cuando
+coincide con el destino actual, venga de donde venga); el botón ⋮ (o pulsación larga) permite renombrar o eliminar. No se guardan dos
+favoritas a menos de 15 m. Los nombres se guardan sin acentos porque la pantalla del ESP32 no los dibuja.
+
+## Exportar / importar configuración (Ajustes > Herramientas)
+Genera/lee un `.json` (`ConfigBackup.kt`) con: ESP32 elegido, opciones de arranque, destino de la brújula, favoritas, avisos de radar y
+ajustes de lactancia (servidor, intervalo, redes WiFi). Al exportar se pregunta si se incluyen las claves WiFi y el token (texto plano).
+Importar muestra qué se va a sustituir y pide confirmación; solo cambia las secciones presentes en el archivo y valida cada valor.
+No incluye la base de radares, la caché de límites ni los logs (se vuelven a obtener), ni el "habilitado" de lactancia (vive en el ESP32).
+
 ## Rendimiento y consumo
 **App**
 - `AppLog` escribe en bloque (cada ~1,5 s) desde un hilo propio en vez de abrir el fichero en cada línea; avisos y errores al instante.
