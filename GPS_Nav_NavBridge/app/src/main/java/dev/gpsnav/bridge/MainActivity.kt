@@ -26,6 +26,7 @@ import android.os.Looper
 import android.os.PowerManager
 import android.provider.MediaStore
 import android.provider.Settings
+import android.text.InputType
 import android.text.TextUtils
 import android.util.TypedValue
 import android.view.Gravity
@@ -33,6 +34,10 @@ import android.view.View
 import android.view.ViewGroup
 import android.widget.*
 import androidx.core.app.NotificationManagerCompat
+import dev.gpsnav.bridge.radar.RadarConfig
+import dev.gpsnav.bridge.radar.RadarDb
+import dev.gpsnav.bridge.radar.RadarMonitor
+import dev.gpsnav.bridge.radar.RadarUpdater
 import androidx.core.content.FileProvider
 import dev.gpsnav.bridge.ble.DevicePicker
 import java.io.File
@@ -48,6 +53,9 @@ private const val WRAP = ViewGroup.LayoutParams.WRAP_CONTENT
 class MainActivity : Activity() {
 
     private class Row(val root: LinearLayout, val icon: TextView, val sub: TextView)
+
+    private var rowRadarCfg: Row? = null
+    private var rowRadarDb: Row? = null
 
     private val ui = Handler(Looper.getMainLooper())
 
@@ -164,6 +172,8 @@ class MainActivity : Activity() {
     }
 
     private fun setChip(t: String, textColor: Int, bgColor: Int) {
+        if (lastChip == t) return
+        lastChip = t
         chip.text = t; chip.setTextColor(col(textColor)); chip.background = rounded(col(bgColor), 100)
     }
 
@@ -190,10 +200,11 @@ class MainActivity : Activity() {
         getSystemService(PowerManager::class.java).isIgnoringBatteryOptimizations(packageName)
 
     private val tick = object : Runnable {
-        override fun run() { refresh(); ui.postDelayed(this, 500) }
+        override fun run() { refreshStatus(); ui.postDelayed(this, 1000) }
     }
 
-    private fun refresh() {
+    /** Estado de la conexión: se repite cada segundo mientras la pantalla está visible. Solo toca las vistas que cambian. */
+    private fun refreshStatus() {
         val link = BridgeHub.link
         val running = link != null
         val connected = link?.ready == true
@@ -207,13 +218,14 @@ class MainActivity : Activity() {
                 setChip("● Conectando…", R.color.warn, R.color.chip_warn)
             else -> setChip("● Sin conexión", R.color.bad, R.color.chip_bad)
         }
-        deviceLine.text = deviceText()
-        bleLine.text = if (running) st else "El servicio no está en marcha"
-        routeValue.text = if (running) BridgeHub.lastNav else "—"
-        speedValue.text = if (running) BridgeHub.lastSpeed else "—"
-        BridgeHub.lastIcon?.let { preview.setImageBitmap(it) }
-        deviceValue.text = deviceText()
-        destValue.text = destText()
+        val dev = deviceText()
+        deviceLine.setIfChanged(dev)
+        bleLine.setIfChanged(if (running) st else "El servicio no está en marcha")
+        routeValue.setIfChanged(if (running) BridgeHub.lastNav else "—")
+        speedValue.setIfChanged(if (running) BridgeHub.lastSpeed else "—")
+        BridgeHub.lastIcon?.let { if (it !== shownIcon) { shownIcon = it; preview.setImageBitmap(it) } }
+        deviceValue.setIfChanged(dev)
+        destValue.setIfChanged(destText())
 
         if (lastRunning != running) {
             lastRunning = running
@@ -226,6 +238,10 @@ class MainActivity : Activity() {
             }
         }
 
+    }
+
+    /** Permisos y ajustes del sistema: solo cambian cuando el usuario sale a Ajustes, así que basta con mirarlos al volver. */
+    private fun refreshPerms() {
         val listener = NotificationManagerCompat.getEnabledListenerPackages(this).contains(packageName)
         val battery = ignoringBattery()
         rowPerms.set(permissionsOk(), if (permissionsOk()) "Concedidos" else "Bluetooth, ubicación y notificaciones")
@@ -242,6 +258,12 @@ class MainActivity : Activity() {
         )
         batteryHint.visibility = if (battery) View.GONE else View.VISIBLE
     }
+
+    private fun refresh() { refreshStatus(); refreshPerms() }
+
+    private var shownIcon: android.graphics.Bitmap? = null
+    private var lastChip: String? = null
+    private fun TextView.setIfChanged(t: String) { if (text.toString() != t) text = t }
 
     // ------------------------------------------------------------ construcción de la pantalla
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -350,6 +372,41 @@ class MainActivity : Activity() {
         val tools = card(root, "HERRAMIENTAS")
         settingsRow(tools, "≡", col(R.color.primary), "Logs", "Descargar, compartir o borrar el registro") { logsDialog() }
 
+        // --- Avisos de radar
+        val rad = card(root, "AVISOS DE RADAR")
+        switchRow(rad, "Avisar de radares", "Alerta roja en el ESP32 al acercarte a un radar fijo o de tramo (con el ESP32 conectado).",
+            RadarConfig.current.enabled) { RadarConfig.save(this, RadarConfig.current.copy(enabled = it)) }
+        divider(rad)
+        switchRow(rad, "Alerta por exceso de velocidad", "Borde rojo en el ESP32 si superas el límite de la vía en el radar, mientras se muestran los metros.",
+            RadarConfig.current.overspeedAlert) { RadarConfig.save(this, RadarConfig.current.copy(overspeedAlert = it)) }
+        divider(rad)
+        rowRadarCfg = settingsRow(rad, "⚙", col(R.color.primary), "Configurar avisos", radarCfgSummary()) { radarConfigDialog() }
+        divider(rad)
+        rowRadarDb = settingsRow(rad, "⟳", col(R.color.primary), "Base de radares", radarDbSummary()) { updateRadarDb() }
+        rad.addView(
+            label("⚠ Cataluña: faltan los radares oficiales del Servei Català de Trànsit (aún no están integrados). " +
+                "Allí solo se usan los de OpenStreetMap, que pueden estar incompletos.", 12f, col(R.color.warn)),
+            lp(top = 8)
+        )
+        rad.addView(
+            label("Datos: DGT (CC-BY) y © OpenStreetMap contributors (ODbL; también los límites de velocidad de las vías). " +
+                "Solo radares fijos y de tramo publicados; " +
+                "no existen datos oficiales de radares móviles en tiempo real.", 12f, col(R.color.text_muted)),
+            lp(top = 6)
+        )
+
+        // --- Pruebas del ESP32
+        val tests = card(root, "PRUEBAS DEL ESP32")
+        tests.addView(
+            label("Mandan datos de prueba al ESP32 para ver cómo se dibujan. Necesitas tener la app iniciada y el " +
+                "ESP32 conectado. Duran unos ${TestSignals.GPS_SECONDS} s y después se restaura lo real.",
+                12f, col(R.color.text_muted)),
+            lp(bottom = 10)
+        )
+        tests.addView(button("Probar indicación GPS", col(R.color.chip_neutral), col(R.color.text)) { testGpsDialog() }, lp(h = dp(48), bottom = 8))
+        tests.addView(button("Probar dirección de brújula", col(R.color.chip_neutral), col(R.color.text)) { testCompassDialog() }, lp(h = dp(48), bottom = 8))
+        tests.addView(button("Probar aviso de radar", col(R.color.chip_neutral), col(R.color.text)) { testRadarDialog() }, lp(h = dp(48)))
+
         // --- Acerca de
         val about = card(root, "ACERCA DE")
         val aboutTop = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL; gravity = Gravity.CENTER_VERTICAL }
@@ -375,7 +432,7 @@ class MainActivity : Activity() {
         handleShareIntent(intent)
     }
 
-    override fun onResume() { super.onResume(); lastRunning = null; ui.post(tick) }
+    override fun onResume() { super.onResume(); lastRunning = null; refreshPerms(); ui.post(tick) }
     override fun onPause() { super.onPause(); ui.removeCallbacks(tick) }
 
     // ------------------------------------------------------------ acciones
@@ -579,6 +636,127 @@ class MainActivity : Activity() {
         }
         if (Build.VERSION.SDK_INT >= 33) p += Manifest.permission.POST_NOTIFICATIONS
         requestPermissions(p.toTypedArray(), 1)
+    }
+
+    // ------------------------------------------------------------ avisos de radar
+    private fun radarCfgSummary(): String {
+        val c = RadarConfig.current
+        return "1.er aviso a ${c.alertFast} / ${c.alertMid} / ${c.alertSlow} m (rápido / medio / lento)"
+    }
+
+    private fun radarDbSummary(): String {
+        if (RadarDb.count == 0) return "Sin descargar · toca para descargar (necesita internet)"
+        val d = SimpleDateFormat("dd/MM/yyyy", Locale.getDefault()).format(Date(RadarDb.updatedAt))
+        return "${RadarDb.count} radares · actualizada el $d · toca para actualizar"
+    }
+
+    private fun updateRadarDb() {
+        if (RadarUpdater.running) { Toast.makeText(this, "Ya se está descargando", Toast.LENGTH_SHORT).show(); return }
+        rowRadarDb?.sub?.text = "Descargando…"
+        RadarUpdater.update(this) { msg ->
+            Toast.makeText(this, msg, Toast.LENGTH_LONG).show()
+            rowRadarDb?.sub?.text = radarDbSummary()
+        }
+    }
+
+    private fun numField(parent: LinearLayout, title: String, value: Int): EditText {
+        parent.addView(label(title, 13f, col(R.color.text_muted)), lp(top = 10))
+        val e = EditText(this).apply {
+            inputType = InputType.TYPE_CLASS_NUMBER; setSingleLine(); setText(value.toString())
+        }
+        parent.addView(e, lp())
+        return e
+    }
+
+    private fun radarConfigDialog() {
+        val c = RadarConfig.current
+        val box = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL; setPadding(dp(20), dp(8), dp(20), dp(8)) }
+        box.addView(label(
+            "El 2.º aviso salta siempre a la mitad de la distancia del 1.º. Los metros solo se escriben en la " +
+                "pantalla si estás a menos de la distancia indicada para tu velocidad. " +
+                "Referencia: 1000 m a 120 km/h son unos 30 s de antelación. " +
+                "El borde rojo usa el límite de la vía en el radar; solo sale si ese límite se conoce.", 12f, col(R.color.text_muted)), lp())
+        val slow = numField(box, "Velocidad «lenta» por debajo de (km/h)", c.slowBelow)
+        val fast = numField(box, "Velocidad «rápida» por encima de (km/h)", c.fastAbove)
+        val af = numField(box, "1.er aviso a (m) · rápido", c.alertFast)
+        val am = numField(box, "1.er aviso a (m) · medio", c.alertMid)
+        val asl = numField(box, "1.er aviso a (m) · lento", c.alertSlow)
+        val sf = numField(box, "Mostrar metros a menos de (m) · rápido", c.showFast)
+        val sm = numField(box, "Mostrar metros a menos de (m) · medio", c.showMid)
+        val ss = numField(box, "Mostrar metros a menos de (m) · lento", c.showSlow)
+        val sec = numField(box, "Duración de cada alerta roja (s)", c.alertSeconds)
+        val stf = numField(box, "Actualizar metros cada (m) · rápido", c.stepFast)
+        val stm = numField(box, "Actualizar metros cada (m) · medio", c.stepMid)
+        val sts = numField(box, "Actualizar metros cada (m) · lento", c.stepSlow)
+        val ovm = numField(box, "Borde rojo si superas el límite de la vía en más de (km/h)", c.overMargin)
+        val rl = CheckBox(this).apply {
+            text = "Consultar el límite de la vía por internet (OpenStreetMap) y guardarlo"
+            isChecked = c.roadLimits
+        }
+        box.addView(rl, lp(top = 12))
+        fun n(e: EditText, d: Int) = e.text.toString().trim().toIntOrNull() ?: d
+        val sv = ScrollView(this).apply { addView(box) }
+        AlertDialog.Builder(this).setTitle("Avisos de radar").setView(sv)
+            .setPositiveButton("Guardar") { _, _ ->
+                RadarConfig.save(this, c.copy(
+                    slowBelow = n(slow, c.slowBelow), fastAbove = n(fast, c.fastAbove),
+                    alertFast = n(af, c.alertFast), alertMid = n(am, c.alertMid), alertSlow = n(asl, c.alertSlow),
+                    showFast = n(sf, c.showFast), showMid = n(sm, c.showMid), showSlow = n(ss, c.showSlow),
+                    alertSeconds = n(sec, c.alertSeconds),
+                    stepFast = n(stf, c.stepFast), stepMid = n(stm, c.stepMid), stepSlow = n(sts, c.stepSlow),
+                    overMargin = n(ovm, c.overMargin), roadLimits = rl.isChecked))
+                rowRadarCfg?.sub?.text = radarCfgSummary()
+                Toast.makeText(this, "Guardado", Toast.LENGTH_SHORT).show()
+            }
+            .setNeutralButton("Valores por defecto") { _, _ ->
+                RadarConfig.save(this, RadarConfig(enabled = c.enabled))
+                rowRadarCfg?.sub?.text = radarCfgSummary()
+                Toast.makeText(this, "Restaurados los valores por defecto", Toast.LENGTH_SHORT).show()
+            }
+            .setNegativeButton("Cancelar", null).show()
+    }
+
+    private fun testRadarDialog() {
+        val items = RadarMonitor.TestCase.values()
+        AlertDialog.Builder(this).setTitle("Probar aviso de radar")
+            .setItems(items.map { it.label }.toTypedArray()) { _, which ->
+                val err = RadarMonitor.startTest(items[which])
+                Toast.makeText(
+                    this,
+                    err ?: "Enviado «${items[which].label}». Se ve en modo GPS o brújula; suena si el sonido del ESP32 está activado.",
+                    Toast.LENGTH_LONG
+                ).show()
+            }
+            .setNegativeButton("Cancelar", null).show()
+    }
+
+    // ------------------------------------------------------------ pruebas del ESP32
+    private fun testGpsDialog() {
+        val items = TestSignals.Maneuver.values()
+        AlertDialog.Builder(this).setTitle("Probar indicación GPS")
+            .setItems(items.map { it.label }.toTypedArray()) { _, which ->
+                val err = TestSignals.startGps(items[which])
+                Toast.makeText(
+                    this,
+                    err ?: "Enviado «${items[which].label}». El ESP32 debe estar en modo GPS (no brújula).",
+                    Toast.LENGTH_LONG
+                ).show()
+            }
+            .setNegativeButton("Cancelar", null).show()
+    }
+
+    private fun testCompassDialog() {
+        val items = TestSignals.compassCases
+        AlertDialog.Builder(this).setTitle("Probar dirección de brújula")
+            .setItems(items.map { it.label }.toTypedArray()) { _, which ->
+                val err = TestSignals.startCompass(items[which])
+                Toast.makeText(
+                    this,
+                    err ?: "Enviado «${items[which].label}». En el ESP32 activa la brújula (botón de la aguja).",
+                    Toast.LENGTH_LONG
+                ).show()
+            }
+            .setNegativeButton("Cancelar", null).show()
     }
 
     // ------------------------------------------------------------ logs

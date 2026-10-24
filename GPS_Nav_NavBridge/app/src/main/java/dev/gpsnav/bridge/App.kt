@@ -3,6 +3,10 @@ package dev.gpsnav.bridge
 import android.app.ActivityManager
 import android.app.Application
 import android.os.Build
+import android.os.Process
+import dev.gpsnav.bridge.radar.RadarConfig
+import dev.gpsnav.bridge.radar.RadarDb
+import dev.gpsnav.bridge.radar.RoadLimit
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
@@ -14,6 +18,12 @@ class App : Application() {
         super.onCreate()
         AppLog.init(this)
         Destination.load(this)
+        RadarConfig.load(this)
+        // Leer la base de radares (JSON de cientos de KB) no debe retrasar el arranque: va en segundo plano
+        Thread({
+            Process.setThreadPriority(Process.THREAD_PRIORITY_BACKGROUND)
+            RadarDb.load(this); RoadLimit.init(this)
+        }, "radar-init").start()
         val v = runCatching { packageManager.getPackageInfo(packageName, 0).versionName }.getOrNull()
         AppLog.i("App", "===== NUEVA SESIÓN (proceso iniciado) · v$v · Android ${Build.VERSION.RELEASE} " +
             "(API ${Build.VERSION.SDK_INT}) · ${Build.MANUFACTURER} ${Build.MODEL}")

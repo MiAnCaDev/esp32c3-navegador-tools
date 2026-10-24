@@ -32,6 +32,7 @@ import dev.gpsnav.bridge.ble.BleLink
 import dev.gpsnav.bridge.notif.HandlerRegistry
 import dev.gpsnav.bridge.notif.NavNotificationListener
 import dev.gpsnav.bridge.protocol.Frame
+import dev.gpsnav.bridge.radar.RadarMonitor
 import org.json.JSONObject
 
 /**
@@ -48,9 +49,43 @@ class BridgeService : Service() {
 
     // Cada segundo se manda al ESP32 el estado de la brújula (destino, ángulo y distancia).
     private val destHandler = Handler(Looper.getMainLooper())
+
+    /** Evita mandar al ESP32 el mismo mensaje una y otra vez: solo si cambia, o como "sigo aquí" cada [keepMs]. */
+    private class Throttle(private val keepMs: Long) {
+        private var last: String? = null
+        private var at = 0L
+        fun reset() { last = null }
+        fun shouldSend(s: String): Boolean {
+            val now = SystemClock.elapsedRealtime()
+            if (s == last && now - at < keepMs) return false
+            last = s; at = now
+            return true
+        }
+    }
+    // El ESP32 da por caducado el destino a los 6 s y la velocidad a los 12 s: los "sigo aquí" van por debajo.
+    private val destThrottle = Throttle(3_000)
+    private val gpsThrottle = Throttle(5_000)
+    private var wasReady = false
+    private var notReadySince = 0L
+
     private val destTick = object : Runnable {
         override fun run() {
-            BridgeHub.sink.send(Frame.json(Destination.frame()))
+            val now = SystemClock.elapsedRealtime()
+            val ready = BridgeHub.link?.ready == true
+            if (ready && !wasReady) {                       // (re)conexión: el ESP32 necesita el estado completo ya
+                destThrottle.reset(); gpsThrottle.reset()
+                startLocationIfPossible()
+            }
+            // El GPS es lo que más batería gasta: si el ESP32 lleva 30 s sin conexión (apagado, modo lactancia...) se pausa
+            if (ready) notReadySince = 0L
+            else if (notReadySince == 0L) notReadySince = now
+            else if (lm != null && now - notReadySince > GPS_IDLE_MS) stopLocation()
+            wasReady = ready
+
+            if (ready) {
+                val o = Destination.frame()
+                if (destThrottle.shouldSend(o.toString())) BridgeHub.sink.send(Frame.json(o))
+            }
             destHandler.postDelayed(this, 1000)
         }
     }
@@ -58,10 +93,12 @@ class BridgeService : Service() {
     private val locListener = object : LocationListener {
         override fun onLocationChanged(loc: Location) {
             Destination.onLocation(loc)
+            RadarMonitor.onLocation(loc)              // avisos de radar (cálculo en el móvil)
             if (!loc.hasSpeed()) return
             val kmh = Math.round(loc.speed * 3.6f)
             BridgeHub.lastSpeed = "$kmh km/h"
-            BridgeHub.sink.send(Frame.json(JSONObject().put("t", "gps").put("speed", kmh)))
+            val o = JSONObject().put("t", "gps").put("speed", kmh)
+            if (gpsThrottle.shouldSend(o.toString())) BridgeHub.sink.send(Frame.json(o))
         }
         @Deprecated("API antigua") override fun onStatusChanged(p: String?, s: Int, e: android.os.Bundle?) {}
         override fun onProviderEnabled(p: String) {}
@@ -213,6 +250,11 @@ class BridgeService : Service() {
         }.onFailure { AppLog.e("Service", "Error al activar el GPS", it) }
     }
 
+    private fun stopLocation() {
+        lm?.removeUpdates(locListener); lm = null
+        AppLog.i("Service", "GPS en pausa: el ESP32 lleva ${GPS_IDLE_MS / 1000} s sin conexión (se reactiva solo al conectar)")
+    }
+
     /** Foto de la configuración al arrancar: lo primero que hay que mirar cuando algo falla. */
     private fun logSnapshot() {
         val pm = getSystemService(PowerManager::class.java)
@@ -242,6 +284,7 @@ class BridgeService : Service() {
         const val ACTION_RESTART = "dev.gpsnav.bridge.RESTART"
         private const val CHANNEL = "bridge"
         private const val NOTIF_ID = 1
+        private const val GPS_IDLE_MS = 30_000L
 
         fun startSafely(ctx: Context) {
             runCatching { ctx.startForegroundService(Intent(ctx, BridgeService::class.java)) }

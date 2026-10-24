@@ -71,6 +71,7 @@
 #define LGFX_USE_V1
 #include <Arduino.h>
 #include <lvgl.h>
+#include "LvLabel.h"   // lv_label_set_text() sin repintar si el texto no cambia (ver el .h)
 #include <LovyanGFX.hpp>
 #include <ArduinoJson.h>
 #include <math.h>
@@ -148,6 +149,19 @@ struct IconPath {
 // reinicio en bucle ("Interrupt wdt timeout") desaparece. Es el primer paso
 // de diagnostico si el dispositivo se reinicia solo.
 #define ENABLE_BLE 1
+
+// --- Consumo / temperatura ------------------------------------------------------------------------------
+#define CPU_MHZ_IDLE   80    // uso normal (BLE + pantalla). Si notas la animacion lenta, sube a 160
+#define CPU_MHZ_WIFI   160   // solo mientras dura el modo lactancia (WiFi + TLS necesitan mas CPU)
+#define BLE_TX_POWER   ESP_PWR_LVL_N3   // -3 dBm: de sobra con el movil dentro del coche (el defecto es +3 dBm)
+#define LOG_RX         0     // 1 = escribir por serie cada mensaje recibido del movil (solo para depurar)
+#if LOG_RX
+  #define RX_PRINT(x)      Serial.print(x)
+  #define RX_PRINTLN(x)    Serial.println(x)
+#else
+  #define RX_PRINT(x)      do {} while (0)
+  #define RX_PRINTLN(x)    do {} while (0)
+#endif
 
 // ---------------------------------------------------------------------------
 // 2) PANTALLA (LovyanGFX) - copiado tal cual del proyecto original
@@ -946,6 +960,24 @@ void refreshBatteryLabel()
 // Variables para delegar el sonido al loop() principal
 volatile bool pendingProximityAlert = false;
 volatile bool pendingCloseAlert = false;
+volatile bool pendingRadarAlert = false;
+
+// --- Alerta de RADAR (la app decide TODO; aqui solo se dibuja lo que llega en {"t":"radar",...}) ---
+lv_obj_t *radarCont  = nullptr;      // pantalla roja a toda pantalla
+lv_obj_t *radarTri   = nullptr;      // triangulo de aviso
+lv_obj_t *radarBang  = nullptr;      // "!" dentro del triangulo
+lv_obj_t *radarTitle = nullptr;      // "RADAR"
+lv_obj_t *radarSub   = nullptr;      // texto corto de la app (tipo, carretera, limite)
+lv_obj_t *radarDist  = nullptr;      // metros / km (pequeño; solo si la app manda "d")
+lv_obj_t *radarOvr   = nullptr;      // borde rojo de exceso de velocidad (rojo vivo)
+lv_obj_t *radarOvrIn = nullptr;      // fino filo blanco interior, para que el borde se distinga sobre el fondo rojo
+bool      radarOverspeed = false;
+bool      radarShown = false;
+int       radarStage = 0;            // 1 o 2 (numero de aviso en curso)
+int       radarDismissed = 0;        // aviso que el usuario cerro tocando la pantalla
+unsigned long lastRadarMillis = 0;   // ultimo mensaje de radar (si pasan >8 s sin recibir, se quita sola)
+#define RADAR_BORDER 14              // grosor (px) del borde rojo de exceso de velocidad
+#define RADAR_STALE_MS 8000          // la app manda un "sigo aqui" cada 4 s aunque no cambie nada
 
 // ===========================================================================
 // SONIDO
@@ -994,6 +1026,79 @@ void checkProximityAlerts()
   }
 }
 
+
+// ===========================================================================
+// ALERTA DE RADAR
+// ===========================================================================
+// Pitido propio, distinto de los de navegacion: 4 tonos alternos agudo/grave.
+void playRadarAlert()
+{
+  for (int i = 0; i < 4; i++) {
+    beepTone((i & 1) ? 1800 : 2800, 110);
+    delay(35);
+  }
+}
+
+// Exceso de velocidad: borde rojo en todo el perimetro + fondo mas oscuro para que el borde destaque
+void radarSetOverspeed(bool on)
+{
+  if (on == radarOverspeed) return;
+  radarOverspeed = on;
+  lv_obj_set_style_bg_color(radarCont, on ? lv_color_make(110, 0, 0) : lv_color_make(200, 0, 0), 0);
+  if (on) {
+    lv_obj_clear_flag(radarOvr, LV_OBJ_FLAG_HIDDEN);
+    lv_obj_clear_flag(radarOvrIn, LV_OBJ_FLAG_HIDDEN);
+  } else {
+    lv_obj_add_flag(radarOvr, LV_OBJ_FLAG_HIDDEN);
+    lv_obj_add_flag(radarOvrIn, LV_OBJ_FLAG_HIDDEN);
+  }
+}
+
+void radarHide()
+{
+  if (!radarShown) return;
+  radarShown = false;
+  radarStage = 0;
+  radarSetOverspeed(false);
+  lv_obj_add_flag(radarCont, LV_OBJ_FLAG_HIDDEN);
+}
+
+// {"t":"radar","on":1,"n":1,"s":1,"d":850,"txt":"Fijo N-340 90"}   on=0 -> quitar
+//   n = numero de aviso (1/2) · s = 1 -> hacer sonar el pitido · d = metros (opcional) · txt = texto corto
+//   ov = 1 -> exceso de velocidad: borde rojo en toda la pantalla (la app lo manda/quita; aqui no se calcula nada)
+void handleRadarJson(JsonDocument &doc)
+{
+  int on = doc["on"] | 0;
+  if (!on) {
+    radarDismissed = 0;
+    radarHide();
+    return;
+  }
+  if (appMode) return;                                 // en lactancia no hay avisos
+  int n = doc["n"] | 1;
+  if (n == radarDismissed) return;                     // el usuario ya lo cerro tocando la pantalla
+
+  lastRadarMillis = millis();
+  if (lastRadarMillis == 0) lastRadarMillis = 1;
+  radarStage = n;
+
+  lv_label_set_text(radarSub, (const char *)(doc["txt"] | ""));
+  if (!doc["d"].isNull()) {
+    char buf[20];
+    formatDistance((int)(doc["d"] | 0), buf, sizeof(buf));
+    lv_label_set_text(radarDist, buf);
+    lv_obj_clear_flag(radarDist, LV_OBJ_FLAG_HIDDEN);
+  } else {
+    lv_obj_add_flag(radarDist, LV_OBJ_FLAG_HIDDEN);
+  }
+
+  if (!radarShown) {
+    radarShown = true;
+    lv_obj_clear_flag(radarCont, LV_OBJ_FLAG_HIDDEN);
+  }
+  radarSetOverspeed(((int)(doc["ov"] | 0)) != 0);      // la app decide si vas por encima del limite
+  if ((int)(doc["s"] | 0)) pendingRadarAlert = true;   // el sonido se hace en loop()
+}
 
 // ===========================================================================
 // BATERIA (opcional)
@@ -1317,6 +1422,20 @@ void applyLayout()
 
   lv_obj_set_size(dimOverlay, W, H);
   babyLayout(W, H);
+
+  // Alerta de radar: ocupa toda la pantalla
+  lv_obj_set_size(radarCont, W, H);
+  lv_obj_set_pos(radarCont, 0, 0);
+  lv_obj_align(radarTri,   LV_ALIGN_CENTER, 0, -52);
+  lv_obj_align(radarBang,  LV_ALIGN_CENTER, 0, -44);
+  lv_obj_align(radarTitle, LV_ALIGN_CENTER, 0, 12);
+  lv_obj_set_width(radarSub, W - 24);
+  lv_obj_align(radarSub,   LV_ALIGN_CENTER, 0, 44);
+  lv_obj_align(radarDist,  LV_ALIGN_BOTTOM_MID, 0, -12);
+  lv_obj_set_size(radarOvr, W, H);
+  lv_obj_set_pos(radarOvr, 0, 0);
+  lv_obj_set_size(radarOvrIn, W - 2 * RADAR_BORDER, H - 2 * RADAR_BORDER);
+  lv_obj_set_pos(radarOvrIn, RADAR_BORDER, RADAR_BORDER);
 }
 
 void buildUI()
@@ -1383,6 +1502,84 @@ void buildUI()
   lv_obj_set_style_pad_all(toastLabel, 6, 0);
   lv_obj_align(toastLabel, LV_ALIGN_CENTER, 0, 0);
   lv_obj_add_flag(toastLabel, LV_OBJ_FLAG_HIDDEN);
+
+  // --- Alerta roja de radar (por encima de todo, salvo la capa de brillo) ---
+  radarCont = lv_obj_create(scr);
+  lv_obj_remove_style_all(radarCont);
+  lv_obj_set_size(radarCont, lv_disp_get_hor_res(NULL), lv_disp_get_ver_res(NULL));
+  lv_obj_set_pos(radarCont, 0, 0);
+  lv_obj_set_style_bg_color(radarCont, lv_color_make(200, 0, 0), 0);
+  lv_obj_set_style_bg_opa(radarCont, LV_OPA_COVER, 0);
+  lv_obj_clear_flag(radarCont, LV_OBJ_FLAG_SCROLLABLE);
+  lv_obj_add_flag(radarCont, LV_OBJ_FLAG_CLICKABLE);           // traga los toques: no pulsa botones ocultos
+  lv_obj_add_event_cb(radarCont, [](lv_event_t *e) {           // tocar la pantalla cierra este aviso
+    radarDismissed = radarStage;
+    radarHide();
+  }, LV_EVENT_CLICKED, NULL);
+
+  static const lv_point_t radarTriPts[] = { {2, 62}, {37, 3}, {72, 62}, {2, 62} };
+  radarTri = lv_line_create(radarCont);
+  lv_line_set_points(radarTri, radarTriPts, 4);
+  lv_obj_set_style_line_width(radarTri, 6, 0);
+  lv_obj_set_style_line_color(radarTri, lv_color_white(), 0);
+  lv_obj_set_style_line_rounded(radarTri, true, 0);
+
+  radarBang = lv_label_create(radarCont);
+  lv_label_set_text(radarBang, "!");
+  lv_obj_set_style_text_font(radarBang, &lv_font_montserrat_24, 0);
+  lv_obj_set_style_text_color(radarBang, lv_color_white(), 0);
+
+  radarTitle = lv_label_create(radarCont);
+  lv_label_set_text(radarTitle, "RADAR");
+  lv_obj_set_style_text_font(radarTitle, &lv_font_montserrat_24, 0);
+  lv_obj_set_style_text_color(radarTitle, lv_color_white(), 0);
+
+  radarSub = lv_label_create(radarCont);
+  lv_label_set_long_mode(radarSub, LV_LABEL_LONG_DOT);
+  lv_label_set_text(radarSub, "");
+  lv_obj_set_style_text_font(radarSub, &lv_font_montserrat_14, 0);
+  lv_obj_set_style_text_color(radarSub, lv_color_white(), 0);
+  lv_obj_set_style_text_align(radarSub, LV_TEXT_ALIGN_CENTER, 0);
+
+  radarDist = lv_label_create(radarCont);
+  lv_label_set_text(radarDist, "");
+  lv_obj_set_style_text_font(radarDist, &lv_font_montserrat_24, 0);
+  lv_obj_set_style_text_color(radarDist, lv_color_white(), 0);
+  lv_obj_set_style_bg_color(radarDist, lv_color_black(), 0);
+  lv_obj_set_style_bg_opa(radarDist, LV_OPA_50, 0);
+  lv_obj_set_style_radius(radarDist, 8, 0);
+  lv_obj_set_style_pad_left(radarDist, 10, 0);
+  lv_obj_set_style_pad_right(radarDist, 10, 0);
+  lv_obj_set_style_pad_top(radarDist, 3, 0);
+  lv_obj_set_style_pad_bottom(radarDist, 3, 0);
+  lv_obj_add_flag(radarDist, LV_OBJ_FLAG_HIDDEN);
+
+  // Borde de exceso de velocidad (los ultimos hijos: quedan por encima del resto; no reciben toques)
+  radarOvr = lv_obj_create(radarCont);
+  lv_obj_remove_style_all(radarOvr);
+  lv_obj_clear_flag(radarOvr, LV_OBJ_FLAG_CLICKABLE);
+  lv_obj_clear_flag(radarOvr, LV_OBJ_FLAG_SCROLLABLE);
+  lv_obj_set_style_bg_opa(radarOvr, LV_OPA_TRANSP, 0);
+  lv_obj_set_style_border_color(radarOvr, lv_color_make(255, 0, 0), 0);
+  lv_obj_set_style_border_width(radarOvr, RADAR_BORDER, 0);
+  lv_obj_set_style_border_opa(radarOvr, LV_OPA_COVER, 0);
+  lv_obj_set_style_border_side(radarOvr, LV_BORDER_SIDE_FULL, 0);
+  lv_obj_set_style_radius(radarOvr, 0, 0);
+  lv_obj_add_flag(radarOvr, LV_OBJ_FLAG_HIDDEN);
+
+  radarOvrIn = lv_obj_create(radarCont);
+  lv_obj_remove_style_all(radarOvrIn);
+  lv_obj_clear_flag(radarOvrIn, LV_OBJ_FLAG_CLICKABLE);
+  lv_obj_clear_flag(radarOvrIn, LV_OBJ_FLAG_SCROLLABLE);
+  lv_obj_set_style_bg_opa(radarOvrIn, LV_OPA_TRANSP, 0);
+  lv_obj_set_style_border_color(radarOvrIn, lv_color_white(), 0);
+  lv_obj_set_style_border_width(radarOvrIn, 3, 0);
+  lv_obj_set_style_border_opa(radarOvrIn, LV_OPA_COVER, 0);
+  lv_obj_set_style_border_side(radarOvrIn, LV_BORDER_SIDE_FULL, 0);
+  lv_obj_set_style_radius(radarOvrIn, 0, 0);
+  lv_obj_add_flag(radarOvrIn, LV_OBJ_FLAG_HIDDEN);
+
+  lv_obj_add_flag(radarCont, LV_OBJ_FLAG_HIDDEN);
 
   // --- Capa de "brillo" (siempre la última, para quedar por encima) ---
   dimOverlay = lv_obj_create(scr);
@@ -1656,8 +1853,8 @@ void processLine(String line)
   line.trim();
   if (line.length() == 0) return;
 
-  Serial.print("[BLE RECIBIDO] ");
-  Serial.println(line);
+  RX_PRINT("[BLE RECIBIDO] ");
+  RX_PRINTLN(line);
 
   // Busca los límites del objeto JSON {...} ignorando prefijos como \x10GB( y sufijos como );
   int jsonStart = line.indexOf('{');
@@ -1681,17 +1878,19 @@ void processLine(String line)
   }
 
   const char *t = doc["t"] | "desconocido";
-  Serial.print("  └─> Tipo de comando ('t'): ");
-  Serial.println(t);
+  RX_PRINT("  └─> Tipo de comando ('t'): ");
+  RX_PRINTLN(t);
 
   if (strcmp(t, "nav") == 0) {
-    Serial.println("  └─> ¡PAQUETE DE NAVEGACIÓN PROCESADO CON ÉXITO!");
+    RX_PRINTLN("  └─> ¡PAQUETE DE NAVEGACIÓN PROCESADO CON ÉXITO!");
     handleNavJson(doc);
   } else if (strcmp(t, "gps") == 0) {
-    Serial.println("  └─> ¡Datos de velocidad/GPS recibidos!");
+    RX_PRINTLN("  └─> ¡Datos de velocidad/GPS recibidos!");
     handleGpsJson(doc);
   } else if (strcmp(t, "dest") == 0) {
     handleDestJson(doc);
+  } else if (strcmp(t, "radar") == 0) {
+    handleRadarJson(doc);
   } else {
     Serial.printf("  └─> El comando '%s' no es de navegacion (se ignora).\n", t);
   }
@@ -1761,6 +1960,7 @@ void setupBLE()
 {
   Serial.println("  [BLE 1/9] BLEDevice::init...");
   BLEDevice::init("GPS-Nav-ESP32");
+  BLEDevice::setPower(BLE_TX_POWER);
   Serial.println("  [BLE 2/9] setMTU...");
   BLEDevice::setMTU(500);
 
@@ -1806,6 +2006,8 @@ void setupBLE()
   BLEAdvertising *adv = BLEDevice::getAdvertising();
   adv->addServiceUUID(NUS_SERVICE_UUID);
   adv->setScanResponse(true);
+  adv->setMinInterval(160);            // anuncio cada 100-150 ms (unidades de 0,625 ms): menos radio mientras espera al movil
+  adv->setMaxInterval(240);
 
   Serial.println("  [BLE 9/9] startAdvertising...");
   BLEDevice::startAdvertising();
@@ -1858,11 +2060,15 @@ void toggleAppMode()
 #endif
     pendingProximityAlert = false;
     pendingCloseAlert = false;
+    pendingRadarAlert = false;
+    radarDismissed = 0;
+    radarHide();
     setNavWidgetsVisible(false);
     lv_obj_add_flag(muteBtn, LV_OBJ_FLAG_HIDDEN);   // <-- mute
     lv_obj_add_flag(compassBtn, LV_OBJ_FLAG_HIDDEN);
     refreshSpeedLabel();
     refreshBatteryLabel();
+    setCpuFrequencyMhz(CPU_MHZ_WIFI);    // el WiFi con TLS necesita mas CPU; el BLE ya esta apagado
     babyEnter();
     showToast("Bluetooth apagado, WiFi activado");
   } else {
@@ -1882,6 +2088,7 @@ void toggleAppMode()
     refreshSpeedLabel();
     refreshBatteryLabel();
     updateArrow();
+    setCpuFrequencyMhz(CPU_MHZ_IDLE);    // el WiFi ya esta apagado (babyExit lo espera)
 #if ENABLE_BLE
     setupBLE();
 #endif
@@ -1931,6 +2138,7 @@ void applyRotation(uint8_t r)
 // ===========================================================================
 void setup()
 {
+  setCpuFrequencyMhz(CPU_MHZ_IDLE);   // 80 MHz: el C3 consume y se calienta bastante menos que a 160
   Serial.begin(115200);
   // Espera activa a que el USB CDC enumere, para no perder los primeros
   // mensajes (con "USB CDC On Boot: Enabled" el puerto tarda un poco tras
@@ -1999,8 +2207,12 @@ void setup()
 
 void loop()
 {
-  lv_timer_handler();
-  delay(5);
+  // lv_timer_handler() devuelve cuanto falta para su proximo trabajo: se duerme ese tiempo (entre 5 y 20 ms)
+  // en vez de girar a 200 Hz sin hacer nada. 20 ms mantiene la respuesta a toques y a mensajes del movil.
+  uint32_t lvWait = lv_timer_handler();
+  if (lvWait < 5) lvWait = 5;
+  if (lvWait > 20) lvWait = 20;
+  delay(lvWait);
 
   if (appMode) babyLoop();
 
@@ -2028,6 +2240,15 @@ void loop()
   if (pendingCloseAlert) {
     pendingCloseAlert = false;
     if (!soundMuted) playCloseAlert();
+  }
+  if (pendingRadarAlert) {
+    pendingRadarAlert = false;
+    if (!soundMuted) playRadarAlert();
+  }
+  // Seguridad: si el movil deja de mandar mensajes de radar (se cae, sale de rango...), la alerta se quita sola
+  if (radarShown && millis() - lastRadarMillis > RADAR_STALE_MS) {
+    radarDismissed = 0;
+    radarHide();
   }
 
   static unsigned long lastSlow = 0;

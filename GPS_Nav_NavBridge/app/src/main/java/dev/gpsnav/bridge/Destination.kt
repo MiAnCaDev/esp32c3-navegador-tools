@@ -16,6 +16,9 @@ object Destination {
     @Volatile var current: Dest? = null
         private set
 
+    /** Si no es null, sustituye al cálculo real (lo usa TestSignals para probar la brújula del ESP32). */
+    @Volatile var testOverride: JSONObject? = null
+
     @Volatile private var lastLocation: Location? = null
     @Volatile private var lastLocationAt = 0L
     private var lastCourse: Float? = null          // último rumbo de marcha válido (grados desde el norte)
@@ -50,6 +53,7 @@ object Destination {
 
     /** Mensaje para el ESP32. Se llama una vez por segundo. */
     fun frame(): JSONObject {
+        testOverride?.let { return it }
         val o = JSONObject().put("t", "dest")
         val d = current ?: return o.put("set", 0)
         o.put("set", 1).put("name", d.name)

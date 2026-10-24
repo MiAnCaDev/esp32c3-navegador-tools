@@ -6,6 +6,7 @@ import android.service.notification.StatusBarNotification
 import android.util.Log
 import dev.gpsnav.bridge.AppLog
 import dev.gpsnav.bridge.BridgeHub
+import dev.gpsnav.bridge.TestSignals
 import dev.gpsnav.bridge.protocol.Frame
 import dev.gpsnav.bridge.protocol.FrameSink
 import org.json.JSONObject
@@ -34,6 +35,7 @@ class GoogleMapsHandler : NotificationHandler {
             (n.flags and Notification.FLAG_ONGOING_EVENT) != 0
 
     override fun onPosted(ctx: Context, sbn: StatusBarNotification, out: FrameSink) {
+        if (TestSignals.gpsActive) return   // prueba GPS en curso: no pisar la pantalla del ESP32
         val n = sbn.notification
         if ((n.flags and Notification.FLAG_GROUP_SUMMARY) != 0 || !isNav(n)) return
 
@@ -76,6 +78,7 @@ class GoogleMapsHandler : NotificationHandler {
     }
 
     override fun onRemoved(ctx: Context, sbn: StatusBarNotification, out: FrameSink) {
+        if (TestSignals.gpsActive) return
         if (!isNav(sbn.notification)) return
         lastSig = ""; lastIconCrc = -1L
         out.send(Frame.json(JSONObject().put("t", "nav")))   // sin instr/action = navegación terminada
