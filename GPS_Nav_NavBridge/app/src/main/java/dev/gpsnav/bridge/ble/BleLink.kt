@@ -244,6 +244,7 @@ class BleLink(
     private fun handleIncoming(bytes: ByteArray) {
         val s = String(bytes, Charsets.UTF_8)
         AppLog.d(TAG, "ESP32 -> móvil: ${s.trim()}")
+        if (s.contains("\"cfg\"")) dev.gpsnav.bridge.EspConfig.onEspMessage(s)
         if (s.contains("\"bye\"")) {
             sleeping = true
             main.removeCallbacks(giveUp)

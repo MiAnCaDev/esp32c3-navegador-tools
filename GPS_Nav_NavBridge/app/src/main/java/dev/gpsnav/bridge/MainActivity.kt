@@ -54,6 +54,9 @@ class MainActivity : Activity() {
 
     private class Row(val root: LinearLayout, val icon: TextView, val sub: TextView)
 
+    private var lactSwitch: SwitchRef? = null
+    private var lactUpdating = false
+    private var rowLactNet: Row? = null
     private var rowRadarCfg: Row? = null
     private var rowRadarDb: Row? = null
 
@@ -156,19 +159,24 @@ class MainActivity : Activity() {
         sub.text = subtitle
     }
 
-    private fun switchRow(parent: LinearLayout, title: String, subtitle: String, checked: Boolean, onChange: (Boolean) -> Unit) {
+    private class SwitchRef(val sw: Switch, val sub: TextView)
+
+    private fun switchRow(parent: LinearLayout, title: String, subtitle: String, checked: Boolean, onChange: (Boolean) -> Unit): SwitchRef {
         val root = LinearLayout(this).apply {
             orientation = LinearLayout.HORIZONTAL; gravity = Gravity.CENTER_VERTICAL
             setPadding(0, dp(8), 0, dp(8))
         }
         val mid = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL; setPadding(0, 0, dp(12), 0) }
         mid.addView(label(title, 15f, col(R.color.text), true))
-        mid.addView(label(subtitle, 13f, col(R.color.text_muted)))
+        val subView = label(subtitle, 13f, col(R.color.text_muted))
+        mid.addView(subView)
         root.addView(mid, lp(w = 0, weight = 1f))
-        root.addView(Switch(this).apply {
+        val sw = Switch(this).apply {
             isChecked = checked; setOnCheckedChangeListener { _, v -> onChange(v) }
-        })
+        }
+        root.addView(sw)
         parent.addView(root, lp())
+        return SwitchRef(sw, subView)
     }
 
     private fun setChip(t: String, textColor: Int, bgColor: Int) {
@@ -226,6 +234,7 @@ class MainActivity : Activity() {
         BridgeHub.lastIcon?.let { if (it !== shownIcon) { shownIcon = it; preview.setImageBitmap(it) } }
         deviceValue.setIfChanged(dev)
         destValue.setIfChanged(destText())
+        refreshLactancia()
 
         if (lastRunning != running) {
             lastRunning = running
@@ -396,6 +405,22 @@ class MainActivity : Activity() {
                 "Solo radares fijos y de tramo publicados; " +
                 "no existen datos oficiales de radares móviles en tiempo real.", 12f, col(R.color.text_muted)),
             lp(top = 6)
+        )
+
+        // --- Modo lactancia (ajustes que viven en el ESP32)
+        val lact = card(root, "MODO LACTANCIA")
+        lactSwitch = switchRow(lact, "Habilitar modo lactancia en el ESP32",
+            EspConfig.statusText(), EspConfig.shownLact()) { on ->
+            if (!lactUpdating) Toast.makeText(this, EspConfig.requestLact(on), Toast.LENGTH_LONG).show()
+        }
+        divider(lact)
+        rowLactNet = settingsRow(lact, "⚙", col(R.color.primary), "Servidor y WiFi del ESP32", EspConfig.netSummary()) { lactNetDialog() }
+        lact.addView(
+            label("Viene deshabilitado de fábrica: mientras no lo actives aquí, el botón del ESP32 no cambia de modo. " +
+                "Al pulsarlo, el ESP32 se reinicia en modo lactancia (Bluetooth apagado, unos 2 s) y vuelve a modo GPS " +
+                "del mismo modo. Los ajustes de servidor y WiFi se envían con el ESP32 conectado y se aplican la próxima " +
+                "vez que entre en lactancia.", 12f, col(R.color.text_muted)),
+            lp(top = 8)
         )
 
         // --- Pruebas del ESP32
@@ -639,6 +664,70 @@ class MainActivity : Activity() {
         }
         if (Build.VERSION.SDK_INT >= 33) p += Manifest.permission.POST_NOTIFICATIONS
         requestPermissions(p.toTypedArray(), 1)
+    }
+
+    // ------------------------------------------------------------ modo lactancia (ajustes del ESP32)
+    private fun refreshLactancia() {
+        val ref = lactSwitch ?: return
+        val shown = EspConfig.shownLact()
+        if (ref.sw.isChecked != shown) { lactUpdating = true; ref.sw.isChecked = shown; lactUpdating = false }
+        ref.sub.setIfChanged(EspConfig.statusText())
+        rowLactNet?.sub?.setIfChanged(EspConfig.netSummary())
+    }
+
+    private fun lactNetDialog() {
+        val n = EspConfig.loadNet()
+        val box = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL; setPadding(dp(20), dp(8), dp(20), dp(8)) }
+        box.addView(label(
+            "Déjalo vacío para usar el valor por defecto del firmware (LactanciaConfig.h). Si rellenas alguna red, " +
+                "sustituyen a las del firmware. Los datos viajan por Bluetooth (corto alcance) y el ESP32 nunca los devuelve.",
+            12f, col(R.color.text_muted)), lp())
+
+        fun field(title: String, value: String, secret: Boolean = false, number: Boolean = false): EditText {
+            box.addView(label(title, 13f, col(R.color.text_muted)), lp(top = 10))
+            val e = EditText(this).apply {
+                setSingleLine()
+                inputType = when {
+                    number -> InputType.TYPE_CLASS_NUMBER
+                    secret -> InputType.TYPE_CLASS_TEXT or InputType.TYPE_TEXT_VARIATION_PASSWORD
+                    else -> InputType.TYPE_CLASS_TEXT or InputType.TYPE_TEXT_VARIATION_URI
+                }
+                setText(value)
+            }
+            box.addView(e, lp())
+            return e
+        }
+        val api = field("URL de la API", n.api)
+        val tok = field("Token de la API", n.tok, secret = true)
+        val poll = field("Consultar el estado cada (segundos, 10-3600; vacío = por defecto)", if (n.pollSec > 0) n.pollSec.toString() else "", number = true)
+        val ssid = ArrayList<EditText>(); val pass = ArrayList<EditText>()
+        for (i in 0 until EspConfig.MAX_WIFI) {
+            val w = n.wifi.getOrNull(i) ?: ("" to "")
+            ssid.add(field("WiFi ${i + 1}: nombre de la red (solo 2,4 GHz)", w.first))
+            pass.add(field("WiFi ${i + 1}: clave (vacío = red abierta)", w.second, secret = true))
+        }
+
+        val sv = ScrollView(this).apply { addView(box) }
+        AlertDialog.Builder(this).setTitle("Servidor y WiFi del ESP32").setView(sv)
+            .setPositiveButton("Guardar y enviar") { _, _ ->
+                val net = EspConfig.Net(
+                    api = api.text.toString().trim(), tok = tok.text.toString().trim(),
+                    pollSec = poll.text.toString().trim().toIntOrNull() ?: 0,
+                    wifi = (0 until EspConfig.MAX_WIFI).map { ssid[it].text.toString().trim() to pass[it].text.toString() }
+                )
+                EspConfig.saveNet(net)
+                val err = EspConfig.sendNetwork(net)
+                Toast.makeText(this,
+                    err ?: "Enviado al ESP32 ✓. Se aplica la próxima vez que entre en modo lactancia.",
+                    Toast.LENGTH_LONG).show()
+                rowLactNet?.sub?.text = EspConfig.netSummary()
+            }
+            .setNeutralButton("Valores por defecto") { _, _ ->
+                val err = EspConfig.sendReset()
+                Toast.makeText(this, err ?: "Restaurados los valores por defecto del firmware", Toast.LENGTH_LONG).show()
+                rowLactNet?.sub?.text = EspConfig.netSummary()
+            }
+            .setNegativeButton("Cancelar", null).show()
     }
 
     // ------------------------------------------------------------ avisos de radar

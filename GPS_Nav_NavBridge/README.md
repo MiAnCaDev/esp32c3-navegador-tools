@@ -21,6 +21,31 @@ la imagen de la flecha (tal cual la dibuja Google), distancia, calle y velocidad
 3. En el firmware, trata el nuevo JSON (`{"t":"lo-que-sea",...}`) en `processLine()`
    o, si necesitas un tipo binario nuevo, añade un tipo en `Frame.kt` y en `PhoneLink.h`.
 
+## Modo lactancia: habilitar y configurar desde la app
+- **Deshabilitado de fábrica.** `ENABLE_LACTANCIA true` en `ESP32.ino` solo significa "el firmware incluye el modo". El botón
+  del ESP32 no hace nada (avisa "Lactancia off: activala en la app") hasta que se habilita en la app (tarjeta MODO LACTANCIA).
+  El valor se guarda en la memoria NVS del ESP32 y sobrevive a reinicios y a reflashear el sketch.
+- **Cambiar de modo reinicia el ESP32** (~2 s; el móvil se reconecta solo). Así cada modo arranca con la memoria limpia: en
+  lactancia el Bluetooth ni se enciende (toda la RAM para WiFi/TLS) y se acaba el "no conecta" de la segunda vez; en modo GPS
+  no existe la tarea de red (10 KB menos). El arranque en lactancia se pide con una marca en NVS que se borra al leerla, así
+  que un apagado/encendido siempre vuelve a modo GPS.
+- **Valores por defecto** de WiFi, URL, token e intervalo: `ESP32/LactanciaConfig.h` (solo se edita ese fichero).
+  Desde la app ("Servidor y WiFi del ESP32") se pueden sustituir: URL, token, intervalo (10-3600 s) y hasta 3 redes. Se guardan
+  en el ESP32; "Valores por defecto" los borra. El ESP32 nunca devuelve claves ni token, solo cuántos hay.
+- **Protocolo** (`DeviceConfig.h` / `EspConfig.kt`): `{"t":"cfg","get":1|"lact":0/1|"api":".."|"tok":".."|"poll":60|"wi":0,"s":"..","p":".."|"reset":1}`;
+  el ESP32 contesta `{"t":"cfg","lact":0,"api":0,"tok":0,"wifi":0,"poll":0}`. La configuración se envía en modo GPS (con
+  Bluetooth) y se aplica la próxima vez que se entre en lactancia.
+- Seguridad: el ESP32 acepta estos mensajes de cualquier móvil que se conecte por Bluetooth (como el resto de mensajes).
+
+## Lactancia: diagnóstico del "error de servidor"
+En `LactanciaApp.h` (solo cambian las funciones de red y el texto de estado; el bloque de WiFi/URL/token no se toca):
+- La pantalla ya no dice "Error de servidor" a secas: enseña el motivo (`Error: HTTP 500`, `timeout`, `no conecta`,
+  `sin RAM (xxKB)`, `respuesta no valida`, `URL invalida`...). El monitor serie añade una línea `[NET] ...` con el código,
+  la memoria libre y los primeros 160 caracteres de la respuesta del servidor.
+- Respuestas JSON: se guardan solo los campos usados (filtro de ArduinoJson) en vez de un documento fijo de 512 bytes
+  que se quedaba corto si el servidor añadía campos (una respuesta 200 correcta contaba como error).
+- Se siguen las redirecciones 301/302 y los tiempos pasan de 4/5 s a 6/8 s.
+
 ## Rendimiento y consumo
 **App**
 - `AppLog` escribe en bloque (cada ~1,5 s) desde un hilo propio en vez de abrir el fichero en cada línea; avisos y errores al instante.

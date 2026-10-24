@@ -19,6 +19,7 @@ class App : Application() {
         AppLog.init(this)
         Destination.load(this)
         RadarConfig.load(this)
+        EspConfig.init(this)
         // Leer la base de radares (JSON de cientos de KB) no debe retrasar el arranque: va en segundo plano
         Thread({
             Process.setThreadPriority(Process.THREAD_PRIORITY_BACKGROUND)

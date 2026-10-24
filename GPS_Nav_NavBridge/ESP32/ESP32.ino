@@ -50,9 +50,12 @@
 // ============================================================================
 
 // MODO LACTANCIA  (boton de menu, arriba a la izquierda)
-//   true  -> el boton alterna entre "GPS / brujula" y la app de lactancia.
-//   false -> el boton solo muestra "Funcion no habilitada" y no hace nada.
-//            El resto del dispositivo (GPS, brujula, Bluetooth...) sigue igual.
+//   true  -> el firmware INCLUYE el modo lactancia, pero arranca DESHABILITADO: el boton no hace nada hasta que
+//            se habilite desde la app del movil (ajuste guardado en el ESP32, sobrevive a reinicios).
+//   false -> el modo lactancia queda fuera para siempre (la app no puede habilitarlo).
+//   Para cambiar de modo el ESP32 se REINICIA (unos 2 s; el movil se reconecta solo): asi cada modo arranca con la
+//   memoria limpia y el WiFi/TLS de lactancia funciona siempre, no solo la primera vez.
+//   Los valores de WiFi/URL/token por defecto estan en LactanciaConfig.h y se pueden cambiar desde la app.
 #define ENABLE_LACTANCIA true
 
 // SONIDO (pitidos de aviso de giro en modo GPS y brujula)
@@ -83,6 +86,7 @@
 #include <BLESecurity.h>
 
 #include "CST816D.h"
+#include "DeviceConfig.h"
 #include "LactanciaApp.h"
 #include "PhoneLink.h"
 
@@ -1907,6 +1911,20 @@ String stripNonAscii(const String &in)
   return out;
 }
 
+// Estado de los ajustes para el movil (sin claves ni token). La declaracion esta en DeviceConfig.h
+void cfgSendStatus()
+{
+#if ENABLE_BLE
+  if (bleClientConnected && charTX) {
+    char buf[96];
+    cfgStatusJson(buf, sizeof(buf));
+    std::string out = buf;
+    charTX->setValue(out);
+    charTX->notify();
+  }
+#endif
+}
+
 void processLine(String line)
 {
   line.trim();
@@ -1950,6 +1968,8 @@ void processLine(String line)
     handleDestJson(doc);
   } else if (strcmp(t, "radar") == 0) {
     handleRadarJson(doc);
+  } else if (strcmp(t, "cfg") == 0) {
+    cfgHandleJson(doc);                 // ajustes que manda la app (lactancia, WiFi, API...): ver DeviceConfig.h
   } else {
     Serial.printf("  └─> El comando '%s' no es de navegacion (se ignora).\n", t);
   }
@@ -2089,19 +2109,26 @@ void setNavWidgetsVisible(bool visible)
   }
 }
 
+// Cambiar de modo REINICIA el ESP32. Antes se apagaba/encendia el Bluetooth y el WiFi en caliente y la segunda
+// vez el TLS fallaba por falta de memoria ("no conecta"). Reiniciando, cada modo arranca limpio: en modo lactancia
+// el Bluetooth ni se enciende (toda la RAM para WiFi/TLS) y en modo GPS no existe la tarea de red.
+static void restartInto(bool lactancia, const char *msg)
+{
+  cfgRequestBoot(lactancia);
+  showToast(msg);
+  for (int i = 0; i < 14; i++) { lv_timer_handler(); delay(25); }   // deja pintar el aviso antes de reiniciar
+  ESP.restart();
+}
+
 void toggleAppMode()
 {
-  // Lactancia deshabilitada en este dispositivo (ver ENABLE_LACTANCIA al inicio del archivo)
-  if (!ENABLE_LACTANCIA) {
-    showToast("Funcion no habilitada");
+  // Deshabilitado por defecto: solo funciona si se ha habilitado desde la app del movil
+  if (!lactEnabled) {
+    showToast("Lactancia off: activala en la app");
     return;
   }
 
-  appMode = !appMode;
-
-  if (appMode) {
-    compassMode = false;                 // al volver, siempre se empieza en GPS
-    applyCompassIcon();
+  if (!appMode) {
 #if ENABLE_BLE
     // Avisar al movil de que es una pausa voluntaria (para que no vibre ni dé alarma)
     if (bleClientConnected && charTX) {
@@ -2110,51 +2137,25 @@ void toggleAppMode()
       charTX->notify();
       delay(150);                        // da tiempo a que salga el aviso
     }
-    // Apagar Bluetooth de verdad
-    BLEDevice::getAdvertising()->stop();
-    BLEDevice::deinit(false);
-    bleServer = nullptr; charRX = nullptr; charTX = nullptr;
-    bleClientConnected = false;
-    phoneLinkReset();
 #endif
-    pendingProximityAlert = false;
-    pendingCloseAlert = false;
-    pendingRadarAlert = false;
-    radarDismissed = 0;
-    radarHide();
-    setNavWidgetsVisible(false);
-    lv_obj_add_flag(muteBtn, LV_OBJ_FLAG_HIDDEN);   // <-- mute
-    lv_obj_add_flag(compassBtn, LV_OBJ_FLAG_HIDDEN);
-    refreshSpeedLabel();
-    refreshBatteryLabel();
-    setCpuFrequencyMhz(CPU_MHZ_WIFI);    // el WiFi con TLS necesita mas CPU; el BLE ya esta apagado
-    babyEnter();
-    showToast("Bluetooth apagado, WiFi activado");
+    restartInto(true, "Reiniciando: modo lactancia");
   } else {
-    babyExit();
-    navActive = false;
-    navInstr = ""; navAction = ""; navDistanceM = -1;
-    lastInstrKey = "";
-    gIconValid = false;
-    speedKmh = -1;
-    setNavWidgetsVisible(true);
-    lv_obj_clear_flag(muteBtn, LV_OBJ_FLAG_HIDDEN); // <-- mute
-    lv_obj_clear_flag(compassBtn, LV_OBJ_FLAG_HIDDEN);
-    compassMode = false;
-    applyCompassIcon();
-    refreshDistanceLabel();
-    refreshInstrLabel();
-    refreshSpeedLabel();
-    refreshBatteryLabel();
-    updateArrow();
-    setCpuFrequencyMhz(CPU_MHZ_IDLE);    // el WiFi ya esta apagado (babyExit lo espera)
-#if ENABLE_BLE
-    setupBLE();
-#endif
-    showToast("Bluetooth activado");
+    restartInto(false, "Reiniciando: modo GPS");
   }
-  Serial.printf("[HEAP] modo=%s libre=%u maxBloque=%u\n", appMode ? "lactancia" : "GPS",
-                (unsigned)ESP.getFreeHeap(), (unsigned)ESP.getMaxAllocHeap());
+}
+
+// Interfaz de lactancia desde el arranque (BLE nunca se enciende en este modo). Se llama desde setup().
+void startLactanciaUI()
+{
+  appMode = true;
+  compassMode = false;
+  applyCompassIcon();
+  setNavWidgetsVisible(false);
+  lv_obj_add_flag(muteBtn, LV_OBJ_FLAG_HIDDEN);
+  lv_obj_add_flag(compassBtn, LV_OBJ_FLAG_HIDDEN);
+  refreshSpeedLabel();
+  refreshBatteryLabel();
+  babyEnter();                           // enciende el WiFi y crea la tarea de red
 }
 
 // Boton de brujula: alterna entre la pantalla de GPS y la de brujula (solo fuera de lactancia).
@@ -2197,7 +2198,9 @@ void applyRotation(uint8_t r)
 // ===========================================================================
 void setup()
 {
-  setCpuFrequencyMhz(CPU_MHZ_IDLE);   // 80 MHz: el C3 consume y se calienta bastante menos que a 160
+  cfgLoad();                          // ajustes guardados desde la app (NVS): decide tambien el modo de este arranque
+  // 80 MHz en modo GPS (el C3 consume y se calienta bastante menos); 160 MHz en lactancia (WiFi + TLS)
+  setCpuFrequencyMhz(cfgBootLact ? CPU_MHZ_WIFI : CPU_MHZ_IDLE);
   Serial.begin(115200);
   // Espera activa a que el USB CDC enumere, para no perder los primeros
   // mensajes (con "USB CDC On Boot: Enabled" el puerto tarda un poco tras
@@ -2254,14 +2257,23 @@ void setup()
   applyBrightness();
   Serial.println("[CP7] buildUI OK");
 
+  if (cfgBootLact) {
+    // Modo lactancia: el Bluetooth ni se enciende, toda la memoria queda para WiFi + TLS
+    Serial.println("[BOOT] modo LACTANCIA (Bluetooth apagado)");
+    startLactanciaUI();
+  } else {
 #if ENABLE_BLE
-  delay(300); // deja que LVGL/pantalla terminen de asentarse antes de levantar BLE
-  Serial.println("[CP8] setupBLE...");
-  setupBLE();
-  Serial.println("[CP9] setupBLE OK, setup() completo");
+    delay(300); // deja que LVGL/pantalla terminen de asentarse antes de levantar BLE
+    Serial.println("[CP8] setupBLE...");
+    setupBLE();
+    Serial.println("[CP9] setupBLE OK, setup() completo");
 #else
-  Serial.println("BLE DESACTIVADO (ENABLE_BLE 0) - modo diagnostico");
+    Serial.println("BLE DESACTIVADO (ENABLE_BLE 0) - modo diagnostico");
 #endif
+  }
+  Serial.printf("[HEAP] arranque modo=%s lactancia=%s libre=%u maxBloque=%u\n",
+                appMode ? "lactancia" : "GPS", lactEnabled ? "habilitada" : "deshabilitada",
+                (unsigned)ESP.getFreeHeap(), (unsigned)ESP.getMaxAllocHeap());
 }
 
 void loop()

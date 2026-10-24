@@ -75,6 +75,7 @@ class BridgeService : Service() {
             if (ready && !wasReady) {                       // (re)conexión: el ESP32 necesita el estado completo ya
                 destThrottle.reset(); gpsThrottle.reset()
                 startLocationIfPossible()
+                EspConfig.onLinkReady()                     // pregunta los ajustes del ESP32 y reenvía lo pendiente
             }
             // El GPS es lo que más batería gasta: si el ESP32 lleva 30 s sin conexión (apagado, modo lactancia...) se pausa
             if (ready) notReadySince = 0L

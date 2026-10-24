@@ -24,18 +24,15 @@
 #include <HTTPClient.h>
 #include <ArduinoJson.h>
 
-// ------------------------- CONFIGURACION -----------------------------------
-// Redes WiFi, en orden de preferencia: { "NOMBRE_RED", "CONTRASEÑA" }
-// (solo 2,4 GHz). Para una red abierta deja la clave vacía: { "Cafeteria", "" }
-struct WifiCred { const char *ssid; const char *pass; };
-static const WifiCred WIFI_LIST[] = {
-  { "TU_WIFI",    "TU_CLAVE"   },
-  { "OtraRed",    "otraClave"  },
-  { "MovilMiki",  "claveMovil" },
-};
-#define API_BASE   "CAMBIA_ESTA_URL"
-#define API_TOKEN  "CAMBIA_ESTE_TOKEN"   
-#define POLL_MS    60000                 // cada cuanto se consulta el estado en reposo
+// Valores por defecto (WiFi, URL, token, intervalo): en LactanciaConfig.h. La app del movil puede sustituirlos
+// (ver DeviceConfig.h); si no hay valores guardados desde la app, se usan los de LactanciaConfig.h.
+#include "DeviceConfig.h"      // ajustes guardados desde la app (NVS)
+#include "LactanciaConfig.h"
+
+// Valores efectivos: lo guardado desde la app manda; si no, el defecto del firmware
+static String   apiBaseEff()  { return cfgApi[0] ? String(cfgApi) : String(API_BASE); }
+static String   apiTokenEff() { return cfgTok[0] ? String(cfgTok) : String(API_TOKEN); }
+static uint32_t pollMsEff()   { return cfgPollMs ? cfgPollMs : (uint32_t)POLL_MS; }
 // ---------------------------------------------------------------------------
 
 void showToast(const char *text);   // definida en el .ino
@@ -144,7 +141,7 @@ static void netPrepare(HTTPClient &http)
 // GET del estado completo
 static bool httpGetEstado()
 {
-  String url = String(API_BASE) + "?token=" + API_TOKEN + "&action=estado";
+  String url = apiBaseEff() + "?token=" + apiTokenEff() + "&action=estado";
 
   WiFiClientSecure secure;
   secure.setInsecure();   // ver nota al final del fichero
@@ -186,7 +183,7 @@ static bool httpGetEstado()
 // POST de una accion. body va en el cuerpo, el token en la URL (query).
 static bool httpPostAccion(const char *body)
 {
-  String url = String(API_BASE) + "?token=" + API_TOKEN;
+  String url = apiBaseEff() + "?token=" + apiTokenEff();
 
   WiFiClientSecure secure;
   secure.setInsecure();
@@ -246,7 +243,7 @@ static const char *cmdBody(CmdType c)
 }
 
 
-// ------------------- REDES WIFI (lista WIFI_LIST de arriba) ----------------
+// ------------------- REDES WIFI (de la app, o WIFI_LIST de LactanciaConfig.h) ----------------
 #define MAX_WIFIS      6
 #define WIFI_TRY_MS    8000     // tiempo maximo por red antes de pasar a la siguiente
 
@@ -258,15 +255,26 @@ static int     wifiLastOk = 0;  // ultima red que funciono: se prueba primero
 static void wifiLoadConfig()   // llamar una vez, desde babyInit()
 {
   wifiCount = 0;
-  const int total = sizeof(WIFI_LIST) / sizeof(WIFI_LIST[0]);
-  for (int i = 0; i < total && wifiCount < MAX_WIFIS; i++) {
-    if (!WIFI_LIST[i].ssid || !WIFI_LIST[i].ssid[0]) continue;
-    strlcpy(wifiNets[wifiCount].ssid, WIFI_LIST[i].ssid, sizeof(wifiNets[0].ssid));
-    strlcpy(wifiNets[wifiCount].pass, WIFI_LIST[i].pass ? WIFI_LIST[i].pass : "",
-            sizeof(wifiNets[0].pass));
+  // 1) redes guardadas desde la app del movil (si hay alguna, sustituyen a las del firmware)
+  for (int i = 0; i < CFG_MAX_WIFI && wifiCount < MAX_WIFIS; i++) {
+    if (!cfgWifi[i].ssid[0]) continue;
+    strlcpy(wifiNets[wifiCount].ssid, cfgWifi[i].ssid, sizeof(wifiNets[0].ssid));
+    strlcpy(wifiNets[wifiCount].pass, cfgWifi[i].pass, sizeof(wifiNets[0].pass));
     wifiCount++;
   }
-  Serial.printf("[WIFI] %d red(es) configurada(s)\n", wifiCount);
+  const bool fromApp = wifiCount > 0;
+  // 2) si no, las de WIFI_LIST (LactanciaConfig.h)
+  if (!fromApp) {
+    const int total = sizeof(WIFI_LIST) / sizeof(WIFI_LIST[0]);
+    for (int i = 0; i < total && wifiCount < MAX_WIFIS; i++) {
+      if (!WIFI_LIST[i].ssid || !WIFI_LIST[i].ssid[0]) continue;
+      strlcpy(wifiNets[wifiCount].ssid, WIFI_LIST[i].ssid, sizeof(wifiNets[0].ssid));
+      strlcpy(wifiNets[wifiCount].pass, WIFI_LIST[i].pass ? WIFI_LIST[i].pass : "",
+              sizeof(wifiNets[0].pass));
+      wifiCount++;
+    }
+  }
+  Serial.printf("[WIFI] %d red(es) configurada(s) (%s)\n", wifiCount, fromApp ? "desde la app" : "del firmware");
   for (int i = 0; i < wifiCount; i++) Serial.printf("   %d: %s\n", i + 1, wifiNets[i].ssid);
 }
 
@@ -332,8 +340,8 @@ static void netTask(void *)
         continue;
       }
 
-      // tras un error se reintenta a los 5 s en vez de esperar POLL_MS
-      const uint32_t waitMs = (netStatus == NET_ERROR) ? 5000 : POLL_MS;
+      // tras un error se reintenta a los 5 s en vez de esperar el intervalo normal
+      const uint32_t waitMs = (netStatus == NET_ERROR) ? 5000 : pollMsEff();
       CmdType c;
       bool ok;
       if (xQueueReceive(cmdQueue, &c, 0) == pdTRUE) {
@@ -696,11 +704,15 @@ void babyInit()   // en setup(), antes de buildUI()
   wifiLoadConfig();
   babyMutex = xSemaphoreCreateMutex();
   cmdQueue  = xQueueCreate(8, sizeof(CmdType));
-  xTaskCreate(netTask, "net", 10240, nullptr, 1, nullptr);   // TLS necesita pila grande
 }
 
 void babyEnter()  // al entrar en la app: WiFi ON
 {
+  static bool taskCreated = false;
+  if (!taskCreated) {                 // la tarea de red solo existe si se usa la lactancia (ahorra 10 KB de pila en modo GPS)
+    taskCreated = true;
+    xTaskCreate(netTask, "net", 10240, nullptr, 1, nullptr);   // TLS necesita pila grande
+  }
   netStatus = NET_CONNECTING;
   netWanted = true;
   babyDirty = true;
