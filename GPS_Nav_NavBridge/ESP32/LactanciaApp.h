@@ -68,6 +68,7 @@ static QueueHandle_t      cmdQueue  = nullptr;
 static volatile bool      netWanted = false;
 static volatile NetStatus netStatus = NET_OFF;
 static volatile bool      netRadioOn = false;   // true mientras el WiFi esta realmente encendido
+static char               netErr[24] = "";      // motivo corto del ultimo fallo (se enseña en pantalla)
 static volatile bool      babyDirty = true;
 
 // Objetos LVGL
@@ -110,6 +111,36 @@ static void logNetFail(const char *what, int code)
                 (unsigned)ESP.getFreeHeap(), (unsigned)ESP.getMaxAllocHeap());
 }
 
+// Motivo corto para la pantalla (<= 20 caracteres). Codigos > 0 = HTTP; < 0 = errores de HTTPClient/TLS.
+static void setNetErr(int code)
+{
+  const unsigned maxBlock = (unsigned)ESP.getMaxAllocHeap();
+  if (code > 0)              snprintf(netErr, sizeof(netErr), "HTTP %d", code);
+  else if (code == -1 && maxBlock < 20000)
+                             snprintf(netErr, sizeof(netErr), "sin RAM (%uKB)", maxBlock / 1024);   // TLS necesita ~16 KB seguidos
+  else if (code == -1)       snprintf(netErr, sizeof(netErr), "no conecta");
+  else if (code == -11)      snprintf(netErr, sizeof(netErr), "timeout");
+  else if (code == -5)       snprintf(netErr, sizeof(netErr), "conexion perdida");
+  else if (code == -8)       snprintf(netErr, sizeof(netErr), "sin RAM");
+  else                       snprintf(netErr, sizeof(netErr), "error %d", code);
+}
+
+// Primeros caracteres de la respuesta, para ver en el monitor serie el mensaje real del servidor
+static void logNetBody(const String &body)
+{
+  String b = body.length() > 160 ? body.substring(0, 160) : body;
+  b.replace("\n", " "); b.replace("\r", " ");
+  Serial.printf("[NET] respuesta (%u bytes): %s\n", (unsigned)body.length(), b.c_str());
+}
+
+// Ajustes comunes de la peticion
+static void netPrepare(HTTPClient &http)
+{
+  http.setFollowRedirects(HTTPC_STRICT_FOLLOW_REDIRECTS);   // antes un 301/302 (http->https, www...) contaba como error
+  http.setConnectTimeout(6000);                             // antes 4000/5000: justo para TLS + un PHP lento
+  http.setTimeout(8000);
+}
+
 // GET del estado completo
 static bool httpGetEstado()
 {
@@ -118,19 +149,35 @@ static bool httpGetEstado()
   WiFiClientSecure secure;
   secure.setInsecure();   // ver nota al final del fichero
   HTTPClient http;
-  if (!http.begin(secure, url)) { logNetFail("begin", 0); return false; }
-  http.setConnectTimeout(4000);
-  http.setTimeout(5000);
+  if (!http.begin(secure, url)) {
+    logNetFail("begin", 0);
+    snprintf(netErr, sizeof(netErr), "URL invalida");
+    return false;
+  }
+  netPrepare(http);
 
   int code = http.GET();
   bool ok = false;
   if (code == 200) {
-    DynamicJsonDocument doc(512);
-    DeserializationError err = deserializeJson(doc, http.getString());
+    // Solo se guardan los campos que se usan: antes un documento fijo de 512 bytes se quedaba corto en cuanto
+    // el servidor mandaba algun campo mas, y una respuesta 200 correcta contaba como "error de servidor".
+    StaticJsonDocument<384> filter;
+    filter["toma"]["activa"] = true;  filter["toma"]["tipo"] = true;  filter["toma"]["hace"] = true;
+    filter["dormir"]["activa"] = true; filter["dormir"]["hace"] = true;
+    filter["panial"]["tipo"] = true;  filter["panial"]["hace"] = true;
+    DynamicJsonDocument doc(1024);
+    String body = http.getString();
+    DeserializationError err = deserializeJson(doc, body, DeserializationOption::Filter(filter));
     if (!err) { applyState(doc); ok = true; }
-    else Serial.printf("[NET] JSON invalido: %s\n", err.c_str());
+    else {
+      Serial.printf("[NET] JSON invalido: %s\n", err.c_str());
+      logNetBody(body);
+      snprintf(netErr, sizeof(netErr), "respuesta no valida");
+    }
   } else {
     logNetFail("GET estado", code);
+    if (code > 0) logNetBody(http.getString());
+    setNetErr(code);
   }
   http.end();
   return ok;
@@ -144,22 +191,41 @@ static bool httpPostAccion(const char *body)
   WiFiClientSecure secure;
   secure.setInsecure();
   HTTPClient http;
-  if (!http.begin(secure, url)) { logNetFail("begin", 0); return false; }
-  http.setConnectTimeout(4000);
-  http.setTimeout(5000);
+  if (!http.begin(secure, url)) {
+    logNetFail("begin", 0);
+    snprintf(netErr, sizeof(netErr), "URL invalida");
+    return false;
+  }
+  netPrepare(http);
   http.addHeader("Content-Type", "application/x-www-form-urlencoded");
 
   int code = http.POST(String(body));
   bool ok = false;
   if (code == 200) {
-    DynamicJsonDocument doc(512);
-    if (!deserializeJson(doc, http.getString())) {
+    StaticJsonDocument<64> filter;
+    filter["codError"] = true; filter["cadError"] = true;
+    DynamicJsonDocument doc(384);
+    String resp = http.getString();
+    DeserializationError err = deserializeJson(doc, resp, DeserializationOption::Filter(filter));
+    if (!err) {
       int codError = doc["codError"] | -1;
       ok = (codError == 0);
-      if (!ok) Serial.printf("[NET] codError=%d: %s\n", codError, (const char*)(doc["cadError"] | ""));
+      if (!ok) {
+        const char *cad = doc["cadError"] | "";
+        Serial.printf("[NET] codError=%d: %s\n", codError, cad);
+        logNetBody(resp);
+        if (cad[0]) snprintf(netErr, sizeof(netErr), "%.20s", cad);
+        else        snprintf(netErr, sizeof(netErr), "servidor: cod %d", codError);
+      }
+    } else {
+      Serial.printf("[NET] JSON invalido (POST): %s\n", err.c_str());
+      logNetBody(resp);
+      snprintf(netErr, sizeof(netErr), "respuesta no valida");
     }
   } else {
     logNetFail("POST", code);
+    if (code > 0) logNetBody(http.getString());
+    setNetErr(code);
   }
   http.end();
   return ok;
@@ -283,7 +349,9 @@ static void netTask(void *)
         continue;
       }
       NetStatus ns = ok ? NET_ONLINE : NET_ERROR;
+      if (ok) netErr[0] = 0;
       if (ns != netStatus) { netStatus = ns; babyDirty = true; }
+      else if (ns == NET_ERROR) babyDirty = true;      // el motivo puede haber cambiado: refresca el texto
     } else {
       vTaskDelay(pdMS_TO_TICKS(100));
     }
@@ -343,7 +411,12 @@ static void refreshBabyUI()
       lv_label_set_text(bbStatus, "WiFi: OK");
       lv_obj_set_style_text_color(bbStatus, lv_palette_main(LV_PALETTE_GREEN), 0); break;
     case NET_ERROR:
-      lv_label_set_text(bbStatus, "Error de servidor");
+      {
+        char eb[40];
+        if (netErr[0]) snprintf(eb, sizeof(eb), "Error: %s", netErr);
+        else           snprintf(eb, sizeof(eb), "Error de servidor");
+        lv_label_set_text(bbStatus, eb);
+      }
       lv_obj_set_style_text_color(bbStatus, lv_palette_main(LV_PALETTE_RED), 0); break;
     default:
       lv_label_set_text(bbStatus, "");
@@ -643,7 +716,7 @@ void babyExit()   // al salir de la app: WiFi OFF
   // peticion HTTP) antes de levantar BLE. Se llama desde loop(), no desde un
   // evento de LVGL, asi que es seguro mantener la pantalla viva mientras tanto.
   uint32_t t0 = millis();
-  while (netRadioOn && millis() - t0 < 12000) { lv_timer_handler(); delay(20); }
+  while (netRadioOn && millis() - t0 < 18000) { lv_timer_handler(); delay(20); }
   if (netRadioOn) Serial.println("[NET] AVISO: el WiFi no se apago a tiempo");
 }
 
