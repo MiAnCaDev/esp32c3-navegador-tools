@@ -54,9 +54,13 @@ Todo el cálculo lo hace la app (`radar/`); el ESP32 solo dibuja lo que llega.
 - **Menos mensajes al ESP32**: la distancia se redondea hacia arriba a pasos de 100 m (>90 km/h), 50 m (40-90) o 20 m (<40)
   y solo se manda un mensaje cuando cambia el valor mostrado (más uno de "sigo aquí" cada 4 s; el ESP32 quita la alerta
   si pasan 8 s sin nada). Pasos configurables.
-- **Exceso de velocidad**: mientras se muestran los metros, si la velocidad supera el límite de la vía en el radar
-  (+ margen configurable) se manda `"ov":1` y el ESP32 pinta el borde de toda la pantalla en rojo (con filo blanco y fondo
-  más oscuro para que se vea) hasta que bajes del límite.
+- **Exceso de velocidad** (línea en el borde DERECHO del ESP32; la app decide, el ESP32 solo dibuja):
+  con la alerta roja en pantalla -> línea blanca fina pegada al borde (`{"t":"radar","on":1,...,"ov":1}`);
+  sin alerta roja -> línea roja gruesa (`{"t":"radar","on":0,"ov":1}`), mientras sigas por encima del límite y hasta pasar
+  el radar. Solo se activa cuando ya ha saltado el primer aviso de ese radar. Se quita con `{"t":"radar","on":0}`.
+- **Distancia en la pantalla normal**: cuando acaba la alerta roja, una pastilla "Radar 850 m" en la esquina superior derecha
+  (`{"t":"radar","on":0,"d":850}`) sigue mostrando los metros hasta pasar el radar. Misma regla que en la alerta: solo si estás
+  a menos de la distancia de "mostrar metros" de tu franja de velocidad, en pasos de 100/50/20 m. Interruptor propio en la app.
 - **Límite de la vía** (`RoadLimit`): primero el del propio radar (si OpenStreetMap lo anota); si no, el `maxspeed` de la vía
   más cercana al radar y con sentido acorde al rumbo, consultado a Overpass una vez por radar (cuando es el siguiente
   radar por delante a <3 km) y guardado en `filesDir/limites.json`. Solo se envían las coordenadas del radar. Sin dato o sin

@@ -21,7 +21,11 @@ import kotlin.math.sqrt
  *        s   = 1 solo en el primer mensaje de cada aviso: el ESP32 hace sonar el pitido de radar (si no está en silencio)
  *        d   = metros hasta el radar; SOLO viene si cumple la condición de velocidad/distancia de los ajustes.
  *              Va redondeado hacia arriba a pasos de 100/50/20 m según la velocidad y solo se manda cuando cambia
- *        ov  = 1 si vas por encima del límite de la vía en el radar (y se están mostrando los metros): borde rojo en el ESP32
+ *        ov  = 1 si vas por encima del límite de la vía en el radar: línea BLANCA en el borde derecho, sobre la alerta roja
+ *   {"t":"radar","on":0,"d":600,"ov":1}                               -> sin alerta roja: en la pantalla normal, pastilla con
+ *                                                                        los metros al radar (d) y, si vas pasado de velocidad
+ *                                                                        (ov), línea ROJA en el borde derecho; ambas hasta pasar
+ *                                                                        el radar
  *        txt = texto corto
  *   {"t":"radar","on":0}                                              -> quitar la alerta
  *
@@ -57,9 +61,13 @@ object RadarMonitor {
     private var windowStage = 0
     private var soundPending = false
     private var lastD = -2                      // última distancia enviada (-1 = sin metros, -2 = nada enviado aún)
-    private var lastOv = false
     private var lastLim = 0
     private var lastSentAt = 0L
+
+    // ---- lo que el ESP32 está mostrando según el último mensaje enviado ----
+    private var espAlert = false                // pantalla roja de radar
+    private var espOv = false                   // línea de exceso de velocidad (blanca sobre la alerta / roja sin ella)
+    private var lastIdleD = -1                  // metros que muestra la pastilla de la pantalla normal (-1 = ninguna)
 
     // ================================================================ servicio
     fun onLocation(loc: Location) {
@@ -102,7 +110,7 @@ object RadarMonitor {
         if (pre >= 0) RoadLimit.limitFor(db[pre], heading)
 
         if (best != target) {                                   // objetivo nuevo (o ninguno)
-            if (windowStage != 0) endWindow(send = true)
+            clearEsp(send = true)                               // quita alerta y línea de exceso del radar anterior
             target = best; minDist = Double.MAX_VALUE; fired1 = false; fired2 = false
         }
         if (target < 0) return
@@ -113,7 +121,7 @@ object RadarMonitor {
         if (d > minDist + RECEDE_M) {
             passed[target] = now + PASSED_MS
             AppLog.i("Radar", "Radar #$target pasado (${minDist.roundToInt()} m)")
-            if (windowStage != 0) endWindow(send = true)
+            clearEsp(send = true)                               // al pasar el radar se quita también la línea roja
             target = -1
             return
         }
@@ -128,49 +136,67 @@ object RadarMonitor {
             startWindow(2, now, cfg, d, kmh)
         }
 
-        // 4) mantener el aviso vivo mientras dure
-        if (windowStage != 0) {
-            if (now < windowUntil) sendFrame(windowStage, d, kmh, cfg, db[target], now, heading) else endWindow(send = true)
-        }
+        // 4) estado hacia el ESP32: alerta roja mientras dura la ventana; después solo la línea roja si vas pasado,
+        //    y eso hasta que pases el radar (o dejes de ir por encima del límite)
+        val lim = RoadLimit.limitFor(db[target], heading)
+        val over = cfg.overspeedAlert && fired1 && lim > 0 && kmh.roundToInt() > lim + cfg.overMargin
+        // Distancia en la pantalla normal: misma regla de velocidad/metros que en la alerta, y solo tras el primer aviso
+        val idleQ = if (cfg.idleDistance && fired1 && d <= cfg.showDist(kmh)) quant(d, cfg.step(kmh)) else -1
+        if (windowStage != 0 && now >= windowUntil) { windowStage = 0; soundPending = false }   // fin de la alerta roja
+        if (windowStage != 0) sendFrame(windowStage, d, kmh, cfg, db[target], now, lim, over)
+        else sendIdle(over, idleQ, now)
     }
 
     private fun startWindow(stage: Int, now: Long, cfg: RadarConfig, d: Double, kmh: Float) {
         windowStage = stage
         windowUntil = now + cfg.alertSeconds * 1000L
         soundPending = true
-        lastD = -2; lastOv = false; lastLim = 0; lastSentAt = 0L             // fuerza el primer mensaje del aviso
+        lastD = -2; lastLim = 0; lastSentAt = 0L             // fuerza el primer mensaje del aviso
         AppLog.i("Radar", "AVISO $stage: radar #$target a ${d.roundToInt()} m, ${kmh.roundToInt()} km/h " +
             "(X=${cfg.alertDist(kmh)} m)")
         BridgeHub.lastNav = "RADAR $stage | ${d.roundToInt()} m"
     }
 
-    private fun endWindow(send: Boolean) {
+    /** Quita del ESP32 la alerta y la línea de exceso (solo manda algo si había algo en pantalla). */
+    private fun clearEsp(send: Boolean) {
         windowStage = 0; soundPending = false
-        if (send) BridgeHub.sink.send(Frame.json(JSONObject().put("t", "radar").put("on", 0)))
+        if (send && (espAlert || espOv || lastIdleD >= 0))
+            BridgeHub.sink.send(Frame.json(JSONObject().put("t", "radar").put("on", 0)))
+        espAlert = false; espOv = false; lastIdleD = -1
     }
 
     private fun reset(sendOff: Boolean) {
-        val had = windowStage != 0
         target = -1; minDist = Double.MAX_VALUE; fired1 = false; fired2 = false
-        if (had) endWindow(send = sendOff)
+        clearEsp(sendOff)
     }
 
-    private fun sendFrame(stage: Int, d: Double, kmh: Float, cfg: RadarConfig, r: Radar, now: Long, heading: Double) {
+    /** Alerta roja en pantalla. Solo se manda si cambia algo (metros mostrados, exceso, límite) o como "sigo aquí". */
+    private fun sendFrame(stage: Int, d: Double, kmh: Float, cfg: RadarConfig, r: Radar, now: Long, lim: Int, over: Boolean) {
         val showD = d <= cfg.showDist(kmh)
         val q = if (showD) quant(d, cfg.step(kmh)) else -1
-        // Límite que se multa en ese radar: el del radar o, si no lo trae, el de la vía (OpenStreetMap)
-        val lim = RoadLimit.limitFor(r, heading)
-        // Exceso de velocidad: solo mientras se muestran los metros y si el límite es conocido
-        val ov = cfg.overspeedAlert && showD && lim > 0 && kmh.roundToInt() > lim + cfg.overMargin
         val forced = soundPending
-        if (!forced && q == lastD && ov == lastOv && lim == lastLim && now - lastSentAt < KEEPALIVE_MS) return   // nada nuevo
+        if (!forced && espAlert && q == lastD && over == espOv && lim == lastLim && now - lastSentAt < KEEPALIVE_MS) return
 
         val o = JSONObject().put("t", "radar").put("on", 1).put("n", stage).put("s", if (forced) 1 else 0)
             .put("txt", label(r, lim))
         if (q >= 0) o.put("d", q)
-        if (ov) o.put("ov", 1)
+        if (over) o.put("ov", 1)                                 // línea blanca en el borde derecho
         soundPending = false
-        lastD = q; lastOv = ov; lastLim = lim; lastSentAt = now
+        lastD = q; lastLim = lim; lastSentAt = now; espAlert = true; espOv = over; lastIdleD = -1
+        BridgeHub.sink.send(Frame.json(o))
+    }
+
+    /**
+     * Sin alerta roja: pastilla con los metros al radar y/o línea roja de exceso, hasta pasar el radar.
+     * Solo se manda si cambia algo (el valor mostrado, el exceso), más un "sigo aquí" cada 4 s.
+     */
+    private fun sendIdle(over: Boolean, q: Int, now: Long) {
+        val has = over || q >= 0
+        if (!espAlert && over == espOv && q == lastIdleD && (!has || now - lastSentAt < KEEPALIVE_MS)) return   // nada nuevo
+        val o = JSONObject().put("t", "radar").put("on", 0)
+        if (q >= 0) o.put("d", q)
+        if (over) o.put("ov", 1)
+        espAlert = false; espOv = over; lastIdleD = q; lastSentAt = now
         BridgeHub.sink.send(Frame.json(o))
     }
 
@@ -186,8 +212,10 @@ object RadarMonitor {
         SECOND("Aviso 2 (mitad de distancia)"),
         SEQUENCE("Secuencia: aviso 1 + aviso 2"),
         NO_DISTANCE("Aviso sin metros"),
-        SPEEDING("Exceso de velocidad (borde rojo)"),
+        SPEEDING("Exceso de velocidad (línea blanca y luego roja)"),
     }
+
+    private const val IDLE_TEST_MS = 6000L       // en las pruebas: cuánto dura la fase "pantalla normal" tras la alerta
 
     @Volatile var testActive = false
         private set
@@ -210,21 +238,36 @@ object RadarMonitor {
                     .put("s", if (s == 0) 1 else 0).put("txt", "Prueba Fijo 90")
                 // simula ~108 km/h acercándose; la distancia va en pasos como en un aviso real
                 if (withDist) o.put("d", quant(maxOf(startM - s * 30, 20).toDouble(), cfg.stepFast))
-                // exceso: borde rojo desde el 2.º segundo hasta 1 s antes del final (para ver también cómo se quita)
-                if (withDist && speeding && s >= 1 && s < sec - 1) o.put("ov", 1)
+                // exceso: línea blanca en el borde derecho desde el 2.º segundo, mientras dura la alerta roja
+                if (withDist && speeding && s >= 1) o.put("ov", 1)
                 post(t0Ms + s * 1000L) { BridgeHub.sink.send(Frame.json(o)) }
             }
-            post(t0Ms + sec * 1000L) { BridgeHub.sink.send(Frame.json(JSONObject().put("t", "radar").put("on", 0))) }
+            val tEnd = t0Ms + sec * 1000L
+            if (withDist) {
+                // acaba la alerta roja: en la pantalla normal queda la distancia (y la línea roja si sigues pasado)
+                // hasta "pasar el radar" (aquí, 6 s) y luego se quita todo
+                for (k in 0 until 3) {
+                    val dd = quant(maxOf(startM - sec * 30 - k * 60, 20).toDouble(), cfg.stepFast)
+                    post(tEnd + k * 2000L) {
+                        val o = JSONObject().put("t", "radar").put("on", 0).put("d", dd)
+                        if (speeding) o.put("ov", 1)
+                        BridgeHub.sink.send(Frame.json(o))
+                    }
+                }
+                post(tEnd + IDLE_TEST_MS) { BridgeHub.sink.send(Frame.json(JSONObject().put("t", "radar").put("on", 0))) }
+            } else {
+                post(tEnd) { BridgeHub.sink.send(Frame.json(JSONObject().put("t", "radar").put("on", 0))) }
+            }
         }
 
         val total: Long = when (c) {
-            TestCase.FIRST -> { alert(0, 1, x, true); sec * 1000L }
-            TestCase.SECOND -> { alert(0, 2, x / 2, true); sec * 1000L }
+            TestCase.FIRST -> { alert(0, 1, x, true); sec * 1000L + IDLE_TEST_MS }
+            TestCase.SECOND -> { alert(0, 2, x / 2, true); sec * 1000L + IDLE_TEST_MS }
             TestCase.NO_DISTANCE -> { alert(0, 1, x, false); sec * 1000L }
-            TestCase.SPEEDING -> { alert(0, 2, x / 2, true, speeding = true); sec * 1000L }
+            TestCase.SPEEDING -> { alert(0, 2, x / 2, true, speeding = true); sec * 1000L + IDLE_TEST_MS }
             TestCase.SEQUENCE -> {
-                val gap = (sec + 3) * 1000L
-                alert(0, 1, x, true); alert(gap, 2, x / 2, true); gap + sec * 1000L
+                val gap = sec * 1000L + IDLE_TEST_MS + 1000L          // el 2.º aviso llega cuando acaba la fase "pantalla normal"
+                alert(0, 1, x, true); alert(gap, 2, x / 2, true); gap + sec * 1000L + IDLE_TEST_MS
             }
         }
         post(total + 500) { testActive = false; BridgeHub.lastNav = "-" }

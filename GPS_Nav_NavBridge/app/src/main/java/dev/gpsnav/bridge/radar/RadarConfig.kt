@@ -34,6 +34,8 @@ data class RadarConfig(
     val roadLimits: Boolean = true,
     /** Borde rojo en el ESP32 al superar el límite de la vía en el radar (se puede apagar sin quitar los avisos). */
     val overspeedAlert: Boolean = true,
+    /** Tras la alerta roja, mostrar en la pantalla normal los metros que faltan hasta el radar (hasta pasarlo). */
+    val idleDistance: Boolean = true,
 ) {
     fun band(kmh: Float) = if (kmh > fastAbove) 2 else if (kmh >= slowBelow) 1 else 0
     fun alertDist(kmh: Float) = when (band(kmh)) { 2 -> alertFast; 1 -> alertMid; else -> alertSlow }
@@ -80,6 +82,7 @@ data class RadarConfig(
                 overMargin = p.getInt("radar_ovm", d.overMargin),
                 roadLimits = p.getBoolean("radar_rl", d.roadLimits),
                 overspeedAlert = p.getBoolean("radar_ovr_on", d.overspeedAlert),
+                idleDistance = p.getBoolean("radar_idle", d.idleDistance),
             ).sanitized()
         }
 
@@ -96,6 +99,7 @@ data class RadarConfig(
                 .putInt("radar_ovm", s.overMargin)
                 .putBoolean("radar_rl", s.roadLimits)
                 .putBoolean("radar_ovr_on", s.overspeedAlert)
+                .putBoolean("radar_idle", s.idleDistance)
                 .apply()
         }
     }

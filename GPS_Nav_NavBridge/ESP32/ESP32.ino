@@ -969,14 +969,18 @@ lv_obj_t *radarBang  = nullptr;      // "!" dentro del triangulo
 lv_obj_t *radarTitle = nullptr;      // "RADAR"
 lv_obj_t *radarSub   = nullptr;      // texto corto de la app (tipo, carretera, limite)
 lv_obj_t *radarDist  = nullptr;      // metros / km (pequeño; solo si la app manda "d")
-lv_obj_t *radarOvr   = nullptr;      // borde rojo de exceso de velocidad (rojo vivo)
-lv_obj_t *radarOvrIn = nullptr;      // fino filo blanco interior, para que el borde se distinga sobre el fondo rojo
-bool      radarOverspeed = false;
+lv_obj_t *radarOvrBar = nullptr;     // barra vertical en el borde DERECHO: aviso de exceso de velocidad
+bool      radarOverspeed = false;    // la app dice que vas por encima del limite
+int       radarScrW = 240, radarScrH = 280;   // tamano actual de pantalla (lo fija applyLayout)
+lv_obj_t *radarIdleChip = nullptr;   // pastilla "Radar 850 m" en la pantalla normal (cuando no hay alerta roja)
+int       radarIdleDist = -1;        // metros que manda la app para la pastilla (-1 = ninguna)
 bool      radarShown = false;
 int       radarStage = 0;            // 1 o 2 (numero de aviso en curso)
 int       radarDismissed = 0;        // aviso que el usuario cerro tocando la pantalla
 unsigned long lastRadarMillis = 0;   // ultimo mensaje de radar (si pasan >8 s sin recibir, se quita sola)
-#define RADAR_BORDER 14              // grosor (px) del borde rojo de exceso de velocidad
+#define RADAR_BAR_RED_W      10      // exceso SIN alerta de radar: linea roja gruesa pegada al borde derecho
+#define RADAR_BAR_WHITE_W     6      // exceso CON alerta de radar (pantalla roja): linea blanca fina...
+#define RADAR_BAR_WHITE_INSET 4      // ...a 4 px del borde derecho (y de arriba/abajo)
 #define RADAR_STALE_MS 8000          // la app manda un "sigo aqui" cada 4 s aunque no cambie nada
 
 // ===========================================================================
@@ -1039,47 +1043,100 @@ void playRadarAlert()
   }
 }
 
-// Exceso de velocidad: borde rojo en todo el perimetro + fondo mas oscuro para que el borde destaque
+// Pastilla con los metros al radar en la pantalla normal (esquina superior derecha), solo sin alerta roja
+void radarUpdateIdleChip()
+{
+  if (radarIdleChip == nullptr) return;
+  if (radarIdleDist < 0 || radarShown || appMode) {
+    lv_obj_add_flag(radarIdleChip, LV_OBJ_FLAG_HIDDEN);
+    return;
+  }
+  char dist[16], buf[32];
+  formatDistance(radarIdleDist, dist, sizeof(dist));
+  snprintf(buf, sizeof(buf), "Radar %s", dist);
+  lv_label_set_text(radarIdleChip, buf);
+  lv_obj_clear_flag(radarIdleChip, LV_OBJ_FLAG_HIDDEN);
+}
+
+// Exceso de velocidad: barra vertical en el borde DERECHO
+//   - con la alerta roja en pantalla: linea blanca fina, muy pegada al borde
+//   - sin alerta de radar:            linea roja gruesa (se mantiene mientras la app diga que vas pasado, hasta pasar el radar)
+void radarUpdateOverspeedBar()
+{
+  if (radarOvrBar == nullptr) return;
+  if (!radarOverspeed || appMode) {
+    lv_obj_add_flag(radarOvrBar, LV_OBJ_FLAG_HIDDEN);
+    return;
+  }
+  if (radarShown) {
+    lv_obj_set_size(radarOvrBar, RADAR_BAR_WHITE_W, radarScrH - 2 * RADAR_BAR_WHITE_INSET);
+    lv_obj_set_pos(radarOvrBar, radarScrW - RADAR_BAR_WHITE_W - RADAR_BAR_WHITE_INSET, RADAR_BAR_WHITE_INSET);
+    lv_obj_set_style_bg_color(radarOvrBar, lv_color_white(), 0);
+  } else {
+    lv_obj_set_size(radarOvrBar, RADAR_BAR_RED_W, radarScrH);
+    lv_obj_set_pos(radarOvrBar, radarScrW - RADAR_BAR_RED_W, 0);
+    lv_obj_set_style_bg_color(radarOvrBar, lv_color_make(255, 0, 0), 0);
+  }
+  lv_obj_clear_flag(radarOvrBar, LV_OBJ_FLAG_HIDDEN);
+}
+
 void radarSetOverspeed(bool on)
 {
-  if (on == radarOverspeed) return;
   radarOverspeed = on;
-  lv_obj_set_style_bg_color(radarCont, on ? lv_color_make(110, 0, 0) : lv_color_make(200, 0, 0), 0);
-  if (on) {
-    lv_obj_clear_flag(radarOvr, LV_OBJ_FLAG_HIDDEN);
-    lv_obj_clear_flag(radarOvrIn, LV_OBJ_FLAG_HIDDEN);
-  } else {
-    lv_obj_add_flag(radarOvr, LV_OBJ_FLAG_HIDDEN);
-    lv_obj_add_flag(radarOvrIn, LV_OBJ_FLAG_HIDDEN);
-  }
+  radarUpdateOverspeedBar();
 }
 
+// Quita solo la pantalla roja; la barra de exceso (si procede) pasa a ser la linea roja
+void radarHideAlert()
+{
+  if (radarShown) {
+    radarShown = false;
+    radarStage = 0;
+    lv_obj_add_flag(radarCont, LV_OBJ_FLAG_HIDDEN);
+  }
+  radarUpdateOverspeedBar();
+  radarUpdateIdleChip();
+}
+
+// Quita todo (alerta, barra y pastilla)
 void radarHide()
 {
-  if (!radarShown) return;
-  radarShown = false;
-  radarStage = 0;
+  radarIdleDist = -1;
+  radarHideAlert();
   radarSetOverspeed(false);
-  lv_obj_add_flag(radarCont, LV_OBJ_FLAG_HIDDEN);
 }
 
-// {"t":"radar","on":1,"n":1,"s":1,"d":850,"txt":"Fijo N-340 90"}   on=0 -> quitar
+// {"t":"radar","on":1,"n":1,"s":1,"d":850,"ov":1,"txt":"Fijo N-340 90"}   -> alerta roja
+// {"t":"radar","on":0,"d":600,"ov":1}                                      -> sin alerta: pastilla con los metros (d) y,
+//                                                                             si ov, linea roja en el borde derecho
+// {"t":"radar","on":0}                                                     -> todo fuera
 //   n = numero de aviso (1/2) · s = 1 -> hacer sonar el pitido · d = metros (opcional) · txt = texto corto
-//   ov = 1 -> exceso de velocidad: borde rojo en toda la pantalla (la app lo manda/quita; aqui no se calcula nada)
+//   ov = 1 -> vas por encima del limite (la app lo decide y lo quita; aqui no se calcula nada)
 void handleRadarJson(JsonDocument &doc)
 {
   int on = doc["on"] | 0;
-  if (!on) {
+  bool ov = ((int)(doc["ov"] | 0)) != 0;
+  if (appMode) return;                                 // en lactancia no hay avisos
+
+  lastRadarMillis = millis();                          // cualquier mensaje de radar renueva el temporizador de seguridad
+  if (lastRadarMillis == 0) lastRadarMillis = 1;
+
+  int dNow = doc["d"].isNull() ? -1 : (int)(doc["d"] | -1);
+
+  if (!on) {                                           // sin alerta roja (la pastilla y la linea roja pueden seguir)
     radarDismissed = 0;
-    radarHide();
+    radarOverspeed = ov;
+    radarIdleDist = dNow;
+    radarHideAlert();                                  // actualiza barra y pastilla
     return;
   }
-  if (appMode) return;                                 // en lactancia no hay avisos
   int n = doc["n"] | 1;
-  if (n == radarDismissed) return;                     // el usuario ya lo cerro tocando la pantalla
-
-  lastRadarMillis = millis();
-  if (lastRadarMillis == 0) lastRadarMillis = 1;
+  if (n == radarDismissed) {                           // el usuario cerro este aviso tocando la pantalla
+    radarIdleDist = dNow;                              // pero la pastilla y la linea de exceso siguen
+    radarSetOverspeed(ov);
+    radarUpdateIdleChip();
+    return;
+  }
   radarStage = n;
 
   lv_label_set_text(radarSub, (const char *)(doc["txt"] | ""));
@@ -1092,11 +1149,14 @@ void handleRadarJson(JsonDocument &doc)
     lv_obj_add_flag(radarDist, LV_OBJ_FLAG_HIDDEN);
   }
 
+  radarOverspeed = ov;
+  radarIdleDist = -1;                                  // con la alerta roja los metros van dentro de ella
   if (!radarShown) {
     radarShown = true;
     lv_obj_clear_flag(radarCont, LV_OBJ_FLAG_HIDDEN);
   }
-  radarSetOverspeed(((int)(doc["ov"] | 0)) != 0);      // la app decide si vas por encima del limite
+  radarUpdateIdleChip();                               // la oculta
+  radarUpdateOverspeedBar();                           // linea blanca sobre la alerta roja
   if ((int)(doc["s"] | 0)) pendingRadarAlert = true;   // el sonido se hace en loop()
 }
 
@@ -1432,10 +1492,10 @@ void applyLayout()
   lv_obj_set_width(radarSub, W - 24);
   lv_obj_align(radarSub,   LV_ALIGN_CENTER, 0, 44);
   lv_obj_align(radarDist,  LV_ALIGN_BOTTOM_MID, 0, -12);
-  lv_obj_set_size(radarOvr, W, H);
-  lv_obj_set_pos(radarOvr, 0, 0);
-  lv_obj_set_size(radarOvrIn, W - 2 * RADAR_BORDER, H - 2 * RADAR_BORDER);
-  lv_obj_set_pos(radarOvrIn, RADAR_BORDER, RADAR_BORDER);
+  lv_obj_align(radarIdleChip, LV_ALIGN_TOP_RIGHT, -(RADAR_BAR_RED_W + 4), 4);   // a la izquierda de la linea roja
+  radarScrW = W;
+  radarScrH = H;
+  radarUpdateOverspeedBar();                           // recoloca la barra del borde derecho (cambia con el giro)
 }
 
 void buildUI()
@@ -1514,7 +1574,7 @@ void buildUI()
   lv_obj_add_flag(radarCont, LV_OBJ_FLAG_CLICKABLE);           // traga los toques: no pulsa botones ocultos
   lv_obj_add_event_cb(radarCont, [](lv_event_t *e) {           // tocar la pantalla cierra este aviso
     radarDismissed = radarStage;
-    radarHide();
+    radarHideAlert();                                    // la linea roja de exceso (si procede) sigue
   }, LV_EVENT_CLICKED, NULL);
 
   static const lv_point_t radarTriPts[] = { {2, 62}, {37, 3}, {72, 62}, {2, 62} };
@@ -1554,32 +1614,31 @@ void buildUI()
   lv_obj_set_style_pad_bottom(radarDist, 3, 0);
   lv_obj_add_flag(radarDist, LV_OBJ_FLAG_HIDDEN);
 
-  // Borde de exceso de velocidad (los ultimos hijos: quedan por encima del resto; no reciben toques)
-  radarOvr = lv_obj_create(radarCont);
-  lv_obj_remove_style_all(radarOvr);
-  lv_obj_clear_flag(radarOvr, LV_OBJ_FLAG_CLICKABLE);
-  lv_obj_clear_flag(radarOvr, LV_OBJ_FLAG_SCROLLABLE);
-  lv_obj_set_style_bg_opa(radarOvr, LV_OPA_TRANSP, 0);
-  lv_obj_set_style_border_color(radarOvr, lv_color_make(255, 0, 0), 0);
-  lv_obj_set_style_border_width(radarOvr, RADAR_BORDER, 0);
-  lv_obj_set_style_border_opa(radarOvr, LV_OPA_COVER, 0);
-  lv_obj_set_style_border_side(radarOvr, LV_BORDER_SIDE_FULL, 0);
-  lv_obj_set_style_radius(radarOvr, 0, 0);
-  lv_obj_add_flag(radarOvr, LV_OBJ_FLAG_HIDDEN);
-
-  radarOvrIn = lv_obj_create(radarCont);
-  lv_obj_remove_style_all(radarOvrIn);
-  lv_obj_clear_flag(radarOvrIn, LV_OBJ_FLAG_CLICKABLE);
-  lv_obj_clear_flag(radarOvrIn, LV_OBJ_FLAG_SCROLLABLE);
-  lv_obj_set_style_bg_opa(radarOvrIn, LV_OPA_TRANSP, 0);
-  lv_obj_set_style_border_color(radarOvrIn, lv_color_white(), 0);
-  lv_obj_set_style_border_width(radarOvrIn, 3, 0);
-  lv_obj_set_style_border_opa(radarOvrIn, LV_OPA_COVER, 0);
-  lv_obj_set_style_border_side(radarOvrIn, LV_BORDER_SIDE_FULL, 0);
-  lv_obj_set_style_radius(radarOvrIn, 0, 0);
-  lv_obj_add_flag(radarOvrIn, LV_OBJ_FLAG_HIDDEN);
-
   lv_obj_add_flag(radarCont, LV_OBJ_FLAG_HIDDEN);
+
+  // Barra de exceso de velocidad (borde derecho). Va POR ENCIMA de la alerta roja y tambien se ve sin ella.
+  radarOvrBar = lv_obj_create(scr);
+  lv_obj_remove_style_all(radarOvrBar);
+  lv_obj_clear_flag(radarOvrBar, LV_OBJ_FLAG_CLICKABLE);   // no recibe toques
+  lv_obj_clear_flag(radarOvrBar, LV_OBJ_FLAG_SCROLLABLE);
+  lv_obj_set_style_bg_opa(radarOvrBar, LV_OPA_COVER, 0);
+  lv_obj_set_style_radius(radarOvrBar, 0, 0);
+  lv_obj_add_flag(radarOvrBar, LV_OBJ_FLAG_HIDDEN);
+
+  // Pastilla con los metros al radar para la pantalla normal (tras la alerta roja)
+  radarIdleChip = lv_label_create(scr);
+  lv_label_set_text(radarIdleChip, "");
+  lv_obj_clear_flag(radarIdleChip, LV_OBJ_FLAG_CLICKABLE);
+  lv_obj_set_style_text_font(radarIdleChip, &lv_font_montserrat_14, 0);
+  lv_obj_set_style_text_color(radarIdleChip, lv_color_white(), 0);
+  lv_obj_set_style_bg_color(radarIdleChip, lv_color_make(200, 0, 0), 0);
+  lv_obj_set_style_bg_opa(radarIdleChip, LV_OPA_COVER, 0);
+  lv_obj_set_style_radius(radarIdleChip, 8, 0);
+  lv_obj_set_style_pad_left(radarIdleChip, 8, 0);
+  lv_obj_set_style_pad_right(radarIdleChip, 8, 0);
+  lv_obj_set_style_pad_top(radarIdleChip, 3, 0);
+  lv_obj_set_style_pad_bottom(radarIdleChip, 3, 0);
+  lv_obj_add_flag(radarIdleChip, LV_OBJ_FLAG_HIDDEN);
 
   // --- Capa de "brillo" (siempre la última, para quedar por encima) ---
   dimOverlay = lv_obj_create(scr);
@@ -2246,7 +2305,7 @@ void loop()
     if (!soundMuted) playRadarAlert();
   }
   // Seguridad: si el movil deja de mandar mensajes de radar (se cae, sale de rango...), la alerta se quita sola
-  if (radarShown && millis() - lastRadarMillis > RADAR_STALE_MS) {
+  if ((radarShown || radarOverspeed || radarIdleDist >= 0) && millis() - lastRadarMillis > RADAR_STALE_MS) {
     radarDismissed = 0;
     radarHide();
   }

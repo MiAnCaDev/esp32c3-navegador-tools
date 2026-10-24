@@ -377,8 +377,11 @@ class MainActivity : Activity() {
         switchRow(rad, "Avisar de radares", "Alerta roja en el ESP32 al acercarte a un radar fijo o de tramo (con el ESP32 conectado).",
             RadarConfig.current.enabled) { RadarConfig.save(this, RadarConfig.current.copy(enabled = it)) }
         divider(rad)
-        switchRow(rad, "Alerta por exceso de velocidad", "Borde rojo en el ESP32 si superas el límite de la vía en el radar, mientras se muestran los metros.",
+        switchRow(rad, "Alerta por exceso de velocidad", "Línea en el borde derecho del ESP32 si superas el límite de la vía en el radar: blanca sobre la alerta, roja sin ella hasta pasar el radar.",
             RadarConfig.current.overspeedAlert) { RadarConfig.save(this, RadarConfig.current.copy(overspeedAlert = it)) }
+        divider(rad)
+        switchRow(rad, "Distancia en la pantalla normal", "Tras la alerta roja, muestra en una esquina los metros que faltan hasta el radar, hasta pasarlo.",
+            RadarConfig.current.idleDistance) { RadarConfig.save(this, RadarConfig.current.copy(idleDistance = it)) }
         divider(rad)
         rowRadarCfg = settingsRow(rad, "⚙", col(R.color.primary), "Configurar avisos", radarCfgSummary()) { radarConfigDialog() }
         divider(rad)
@@ -675,7 +678,7 @@ class MainActivity : Activity() {
             "El 2.º aviso salta siempre a la mitad de la distancia del 1.º. Los metros solo se escriben en la " +
                 "pantalla si estás a menos de la distancia indicada para tu velocidad. " +
                 "Referencia: 1000 m a 120 km/h son unos 30 s de antelación. " +
-                "El borde rojo usa el límite de la vía en el radar; solo sale si ese límite se conoce.", 12f, col(R.color.text_muted)), lp())
+                "El aviso de exceso usa el límite de la vía en el radar; solo sale si ese límite se conoce.", 12f, col(R.color.text_muted)), lp())
         val slow = numField(box, "Velocidad «lenta» por debajo de (km/h)", c.slowBelow)
         val fast = numField(box, "Velocidad «rápida» por encima de (km/h)", c.fastAbove)
         val af = numField(box, "1.er aviso a (m) · rápido", c.alertFast)
@@ -688,7 +691,7 @@ class MainActivity : Activity() {
         val stf = numField(box, "Actualizar metros cada (m) · rápido", c.stepFast)
         val stm = numField(box, "Actualizar metros cada (m) · medio", c.stepMid)
         val sts = numField(box, "Actualizar metros cada (m) · lento", c.stepSlow)
-        val ovm = numField(box, "Borde rojo si superas el límite de la vía en más de (km/h)", c.overMargin)
+        val ovm = numField(box, "Avisar de exceso si superas el límite de la vía en más de (km/h)", c.overMargin)
         val rl = CheckBox(this).apply {
             text = "Consultar el límite de la vía por internet (OpenStreetMap) y guardarlo"
             isChecked = c.roadLimits
