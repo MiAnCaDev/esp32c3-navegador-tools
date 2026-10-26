@@ -7,6 +7,7 @@ import android.util.Xml
 import dev.gpsnav.bridge.AppLog
 import org.json.JSONObject
 import org.xmlpull.v1.XmlPullParser
+import java.io.ByteArrayInputStream
 import java.io.IOException
 import java.io.InputStream
 import java.net.HttpURLConnection
@@ -24,8 +25,20 @@ import java.net.URLEncoder
  * No hay ninguna fuente oficial de radares MÓVILES en tiempo real, así que no se incluyen.
  */
 object RadarUpdater {
-    private const val DGT_URL = "https://infocar.dgt.es/datex2/dgt/PredefinedLocationsPublication/radares/content.xml"
-    private const val OVERPASS_URL = "https://overpass-api.de/api/interpreter"
+    // La DGT está migrando su Punto de Acceso Nacional de infocar.dgt.es (HTTP) a nap.dgt.es (HTTPS): la ficha oficial de
+    // "Fixed radars DGT" ya da la de nap.dgt.es, y la antigua devolvía HTTP 502. Se prueban en este orden.
+    private val DGT_URLS = listOf(
+        "https://nap.dgt.es/datex2/dgt/PredefinedLocationsPublication/radares/content.xml",
+        "https://infocar.dgt.es/datex2/dgt/PredefinedLocationsPublication/radares/content.xml"
+    )
+    // Overpass es un servicio público que a veces va saturado (502, timeouts): se prueban varios espejos
+    internal val OVERPASS_URLS = listOf(
+        "https://overpass-api.de/api/interpreter",
+        "https://overpass.kumi.systems/api/interpreter",
+        "https://overpass.private.coffee/api/interpreter"
+    )
+    private const val DEFAULT_UA = "GPSNavBridge/1.0 (app personal Android)"
+    private const val BROWSER_UA = "Mozilla/5.0 (Linux; Android 14) GPSNavBridge/1.0"   // algunos servidores rechazan agentes desconocidos
     private const val OVERPASS_QUERY =
         "[out:json][timeout:120];area[\"ISO3166-1\"=\"ES\"][admin_level=2]->.es;node[\"highway\"=\"speed_camera\"](area.es);out;"
     private const val MERGE_M = 60.0          // dos puntos a menos de esto se consideran el mismo radar
@@ -51,11 +64,37 @@ object RadarUpdater {
         }, "radar-update").start()
     }
 
+    private fun host(u: String) = u.substringAfter("://").substringBefore('/')
+
     private fun doUpdate(ctx: Context): String {
         var dgt: List<Radar> = emptyList(); var dgtErr: String? = null
         var osm: List<Radar> = emptyList(); var osmErr: String? = null
-        try { dgt = http(DGT_URL).use { parseDgt(it) } } catch (t: Throwable) { dgtErr = t.message ?: t.javaClass.simpleName }
-        try { osm = parseOsm(String(http(OVERPASS_URL, OVERPASS_QUERY).use { it.readBytes() }, Charsets.UTF_8)) }
+
+        // --- DGT: se prueba cada dirección hasta que una devuelva radares
+        val errs = ArrayList<String>()
+        for (u in DGT_URLS) {
+            try {
+                val bytes = http(u, null, 60_000, 15_000, BROWSER_UA).use { it.readBytes() }
+                val (list, tags) = parseDgt(ByteArrayInputStream(bytes))
+                if (list.isNotEmpty()) {
+                    dgt = list
+                    AppLog.i("Radar", "DGT ok (${host(u)}): ${list.size} radares, ${bytes.size / 1024} KB")
+                    break
+                }
+                // 200 OK pero sin radares reconocidos: el formato habrá cambiado. Se deja constancia para poder arreglarlo.
+                val snippet = String(bytes, 0, minOf(bytes.size, 300), Charsets.UTF_8).replace(Regex("\\s+"), " ")
+                AppLog.w("Radar", "DGT ${host(u)}: respuesta sin radares reconocibles (${bytes.size} bytes). " +
+                    "Etiquetas vistas: $tags. Inicio: $snippet")
+                errs.add("${host(u)}: formato no reconocido")
+            } catch (t: Throwable) {
+                AppLog.w("Radar", "DGT ${host(u)}: ${t.message ?: t.javaClass.simpleName}")
+                errs.add("${host(u)}: ${t.message ?: t.javaClass.simpleName}")
+            }
+        }
+        if (dgt.isEmpty()) dgtErr = errs.joinToString("; ")
+
+        // --- OpenStreetMap
+        try { osm = parseOsm(overpass(OVERPASS_QUERY, 20_000, 120_000)) }
         catch (t: Throwable) { osmErr = t.message ?: t.javaClass.simpleName }
         AppLog.i("Radar", "Descarga: DGT=${dgt.size} (${dgtErr ?: "ok"}) · OSM=${osm.size} (${osmErr ?: "ok"})")
 
@@ -64,15 +103,34 @@ object RadarUpdater {
 
         val merged = merge(dgt, osm)
         RadarDb.replace(ctx, merged)
-        val warn = listOfNotNull(dgtErr?.let { "DGT falló" }, osmErr?.let { "OSM falló" }).joinToString(", ")
+        // Si falla la DGT se dice por qué (antes solo "DGT falló")
+        val warn = listOfNotNull(dgtErr?.let { "DGT falló ($it)" }, osmErr?.let { "OSM falló" }).joinToString(", ")
         return "Base actualizada: ${merged.size} radares (DGT ${dgt.size} · OSM ${osm.size})" +
             if (warn.isNotEmpty()) " · $warn" else ""
     }
 
-    internal fun http(url: String, postQuery: String? = null, readTimeoutMs: Int = 120_000): InputStream {
+    /** Consulta Overpass probando los espejos en orden. */
+    internal fun overpass(query: String, connectMs: Int, readMs: Int): String {
+        var last: Throwable? = null
+        for (u in OVERPASS_URLS) {
+            try {
+                return String(http(u, query, readMs, connectMs).use { it.readBytes() }, Charsets.UTF_8)
+            } catch (t: Throwable) {
+                last = t
+                AppLog.w("Radar", "Overpass ${host(u)}: ${t.message ?: t.javaClass.simpleName}")
+            }
+        }
+        throw last ?: IOException("sin servidores Overpass")
+    }
+
+    internal fun http(
+        url: String, postQuery: String? = null, readTimeoutMs: Int = 120_000,
+        connectTimeoutMs: Int = 20_000, userAgent: String = DEFAULT_UA
+    ): InputStream {
         val c = URL(url).openConnection() as HttpURLConnection
-        c.connectTimeout = 20_000; c.readTimeout = readTimeoutMs
-        c.setRequestProperty("User-Agent", "GPSNavBridge/1.0 (app personal Android)")
+        c.connectTimeout = connectTimeoutMs; c.readTimeout = readTimeoutMs
+        c.setRequestProperty("User-Agent", userAgent)
+        c.setRequestProperty("Accept", "application/xml, text/xml, application/json, */*")
         if (postQuery != null) {
             c.requestMethod = "POST"; c.doOutput = true
             c.setRequestProperty("Content-Type", "application/x-www-form-urlencoded")
@@ -90,7 +148,7 @@ object RadarUpdater {
      * DATEX II "PredefinedLocationsPublication". Se lee de forma tolerante: por cada predefinedLocation se toma
      * el primer par latitude/longitude (punto, o inicio del tramo), la carretera (roadNumber) y si es lineal.
      */
-    private fun parseDgt(s: InputStream): List<Radar> {
+    private fun parseDgt(s: InputStream): Pair<List<Radar>, String> {
         val p = Xml.newPullParser()
         p.setFeature(XmlPullParser.FEATURE_PROCESS_NAMESPACES, false)
         p.setInput(s, null)
@@ -99,11 +157,13 @@ object RadarUpdater {
         var inLoc = false; var cur = ""
         val lats = ArrayList<Double>(); val lons = ArrayList<Double>()
         var road = ""; var linear = false
+        val tagsSeen = LinkedHashSet<String>()                 // para diagnosticar si cambia el formato
         var ev = p.eventType
         while (ev != XmlPullParser.END_DOCUMENT) {
             when (ev) {
                 XmlPullParser.START_TAG -> {
                     cur = local(p.name)
+                    if (tagsSeen.size < 25) tagsSeen.add(cur)
                     if (cur == "predefinedLocation") { inLoc = true; lats.clear(); lons.clear(); road = ""; linear = false }
                     else if (inLoc && cur == "tpegLinearLocation") linear = true
                 }
@@ -129,7 +189,7 @@ object RadarUpdater {
             }
             ev = p.next()
         }
-        return out
+        return out to tagsSeen.joinToString(",")
     }
 
     private fun parseOsm(json: String): List<Radar> {

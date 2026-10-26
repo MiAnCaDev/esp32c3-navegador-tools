@@ -11,6 +11,7 @@ import android.content.Intent
 class BootReceiver : BroadcastReceiver() {
     override fun onReceive(ctx: Context, intent: Intent) {
         val a = intent.action
+        if (a != Intent.ACTION_BOOT_COMPLETED && a != Intent.ACTION_MY_PACKAGE_REPLACED && a != BridgeService.ACTION_RESTART) return
         AppLog.i("Boot", "Receiver: $a")
         when (a) {
             Intent.ACTION_BOOT_COMPLETED -> {

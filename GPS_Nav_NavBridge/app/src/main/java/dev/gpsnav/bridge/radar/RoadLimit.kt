@@ -97,8 +97,7 @@ object RoadLimit {
     private fun query(r: Radar, heading: Double): Int {
         val q = String.format(Locale.US,
             "[out:json][timeout:15];way(around:%d,%.6f,%.6f)[\"highway\"];out tags geom;", AROUND_M, r.lat, r.lon)
-        val text = String(RadarUpdater.http("https://overpass-api.de/api/interpreter", q, 20_000).use { it.readBytes() },
-            Charsets.UTF_8)
+        val text = RadarUpdater.overpass(q, 8_000, 12_000)      // prueba varios espejos; Overpass a veces va saturado
         val els = JSONObject(text).optJSONArray("elements") ?: return 0
         val cands = ArrayList<Cand>()
         for (i in 0 until els.length()) {

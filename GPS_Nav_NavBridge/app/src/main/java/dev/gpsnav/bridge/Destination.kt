@@ -31,7 +31,7 @@ object Destination {
     fun set(ctx: Context, d: Dest?) {
         current = d
         Prefs.setDestination(ctx, d)
-        AppLog.i("Dest", if (d == null) "Destino quitado" else "Destino fijado: '${d.name}'")
+        AppLog.i("Dest", if (d == null) "Destino quitado" else "Destino fijado")   // sin el nombre: los logs se comparten
     }
 
     fun onLocation(loc: Location) {

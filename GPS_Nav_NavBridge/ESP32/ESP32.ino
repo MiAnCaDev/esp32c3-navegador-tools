@@ -976,6 +976,9 @@ lv_obj_t *radarDist  = nullptr;      // metros / km (pequeño; solo si la app ma
 lv_obj_t *radarOvrBar = nullptr;     // barra vertical en el borde DERECHO: aviso de exceso de velocidad
 bool      radarOverspeed = false;    // la app dice que vas por encima del limite
 int       radarScrW = 240, radarScrH = 280;   // tamano actual de pantalla (lo fija applyLayout)
+lv_obj_t *pairBox     = nullptr;     // cuadro con el codigo de emparejamiento del movil
+lv_obj_t *pairCodeLbl = nullptr;
+uint32_t  pairHideAt  = 0;           // millis() a partir del cual se oculta solo (0 = oculto)
 lv_obj_t *radarIdleChip = nullptr;   // pastilla "Radar 850 m" en la pantalla normal (cuando no hay alerta roja)
 int       radarIdleDist = -1;        // metros que manda la app para la pastilla (-1 = ninguna)
 bool      radarShown = false;
@@ -1644,6 +1647,36 @@ void buildUI()
   lv_obj_set_style_pad_bottom(radarIdleChip, 3, 0);
   lv_obj_add_flag(radarIdleChip, LV_OBJ_FLAG_HIDDEN);
 
+  // --- Cuadro con el codigo de emparejamiento (solo se ve mientras el movil se empareja) ---
+  pairBox = lv_obj_create(scr);
+  lv_obj_remove_style_all(pairBox);
+  lv_obj_set_size(pairBox, 220, 110);
+  lv_obj_align(pairBox, LV_ALIGN_CENTER, 0, 0);
+  lv_obj_set_style_bg_color(pairBox, lv_color_make(15, 25, 55), 0);
+  lv_obj_set_style_bg_opa(pairBox, LV_OPA_COVER, 0);
+  lv_obj_set_style_radius(pairBox, 14, 0);
+  lv_obj_set_style_border_color(pairBox, lv_color_white(), 0);
+  lv_obj_set_style_border_width(pairBox, 2, 0);
+  lv_obj_clear_flag(pairBox, LV_OBJ_FLAG_SCROLLABLE);
+  lv_obj_add_flag(pairBox, LV_OBJ_FLAG_CLICKABLE);
+  lv_obj_add_event_cb(pairBox, [](lv_event_t *e) { cfgHidePairCode(); }, LV_EVENT_CLICKED, NULL);
+  lv_obj_t *pairTitle = lv_label_create(pairBox);
+  lv_label_set_text(pairTitle, "Codigo de emparejamiento");
+  lv_obj_set_style_text_font(pairTitle, &lv_font_montserrat_14, 0);
+  lv_obj_set_style_text_color(pairTitle, lv_color_white(), 0);
+  lv_obj_align(pairTitle, LV_ALIGN_TOP_MID, 0, 8);
+  pairCodeLbl = lv_label_create(pairBox);
+  lv_label_set_text(pairCodeLbl, "000 000");
+  lv_obj_set_style_text_font(pairCodeLbl, &lv_font_montserrat_24, 0);
+  lv_obj_set_style_text_color(pairCodeLbl, lv_color_white(), 0);
+  lv_obj_align(pairCodeLbl, LV_ALIGN_CENTER, 0, 2);
+  lv_obj_t *pairHint = lv_label_create(pairBox);
+  lv_label_set_text(pairHint, "Escribelo en la app");
+  lv_obj_set_style_text_font(pairHint, &lv_font_montserrat_14, 0);
+  lv_obj_set_style_text_color(pairHint, lv_color_make(190, 200, 230), 0);
+  lv_obj_align(pairHint, LV_ALIGN_BOTTOM_MID, 0, -8);
+  lv_obj_add_flag(pairBox, LV_OBJ_FLAG_HIDDEN);
+
   // --- Capa de "brillo" (siempre la última, para quedar por encima) ---
   dimOverlay = lv_obj_create(scr);
   lv_obj_remove_style_all(dimOverlay);
@@ -1911,18 +1944,36 @@ String stripNonAscii(const String &in)
   return out;
 }
 
-// Estado de los ajustes para el movil (sin claves ni token). La declaracion esta en DeviceConfig.h
-void cfgSendStatus()
+// Estado de los ajustes para el movil (sin claves ni token). Las declaraciones estan en DeviceConfig.h
+void cfgSendStatus(const char *note, int mine)
 {
 #if ENABLE_BLE
   if (bleClientConnected && charTX) {
-    char buf[96];
-    cfgStatusJson(buf, sizeof(buf));
+    char buf[160];
+    cfgStatusJson(buf, sizeof(buf), note, mine);
     std::string out = buf;
     charTX->setValue(out);
     charTX->notify();
   }
 #endif
+}
+
+// Codigo de emparejamiento: cuadro en el centro de la pantalla durante 90 s (tocarlo lo cierra)
+void cfgShowPairCode(const char *code)
+{
+  if (!pairBox) return;
+  char b[16];
+  snprintf(b, sizeof(b), "%c%c%c %c%c%c", code[0], code[1], code[2], code[3], code[4], code[5]);
+  lv_label_set_text(pairCodeLbl, b);
+  lv_obj_clear_flag(pairBox, LV_OBJ_FLAG_HIDDEN);
+  pairHideAt = millis() + 90000UL;
+  if (pairHideAt == 0) pairHideAt = 1;
+}
+
+void cfgHidePairCode()
+{
+  if (pairBox) lv_obj_add_flag(pairBox, LV_OBJ_FLAG_HIDDEN);
+  pairHideAt = 0;
 }
 
 void processLine(String line)
@@ -2317,6 +2368,8 @@ void loop()
     if (!soundMuted) playRadarAlert();
   }
   // Seguridad: si el movil deja de mandar mensajes de radar (se cae, sale de rango...), la alerta se quita sola
+  if (pairHideAt != 0 && (int32_t)(millis() - pairHideAt) > 0) cfgHidePairCode();   // el codigo caduca a los 90 s
+  cfgTick();                                                                          // caducidad de codigo/bloqueo de emparejamiento
   if ((radarShown || radarOverspeed || radarIdleDist >= 0) && millis() - lastRadarMillis > RADAR_STALE_MS) {
     radarDismissed = 0;
     radarHide();

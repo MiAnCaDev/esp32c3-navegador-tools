@@ -22,7 +22,9 @@ object LinkResolver {
         "Chrome/124.0 Mobile Safari/537.36"
 
     private val urlRe = Regex("""https?://[^\s<>"']+""")
-    private val googleHost = Regex("""(?:.+\.)?google\.[a-z]{2,3}(?:\.[a-z]{2})?""")
+    // Solo dominios de Google que existen y son suyos. Antes valía cualquier "google.<2-3 letras>", y algunos
+    // (p. ej. .tk o .top) los puede registrar cualquiera: con un enlace así la app se habría conectado a un sitio ajeno.
+    private val googleHost = Regex("""(?:[a-z0-9-]+\.)*google\.(?:com|es|fr|de|it|pt|nl|be|ch|at|ie|ca|cl|pe|co\.uk|com\.mx|com\.ar|com\.br|com\.co)""")
 
     fun extractUrl(text: String): String? = urlRe.find(text)?.value?.trimEnd('.', ',', ')', ';')
 

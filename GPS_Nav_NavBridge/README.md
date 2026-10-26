@@ -35,7 +35,7 @@ la imagen de la flecha (tal cual la dibuja Google), distancia, calle y velocidad
 - **Protocolo** (`DeviceConfig.h` / `EspConfig.kt`): `{"t":"cfg","get":1|"lact":0/1|"api":".."|"tok":".."|"poll":60|"wi":0,"s":"..","p":".."|"reset":1}`;
   el ESP32 contesta `{"t":"cfg","lact":0,"api":0,"tok":0,"wifi":0,"poll":0}`. La configuración se envía en modo GPS (con
   Bluetooth) y se aplica la próxima vez que se entre en lactancia.
-- Seguridad: el ESP32 acepta estos mensajes de cualquier móvil que se conecte por Bluetooth (como el resto de mensajes).
+- Acceso: abierto por defecto (varios móviles); bloqueo opcional con emparejamiento por código (ver "Seguridad").
 
 ## Lactancia: diagnóstico del "error de servidor"
 En `LactanciaApp.h` (solo cambian las funciones de red y el texto de estado; el bloque de WiFi/URL/token no se toca):
@@ -60,11 +60,49 @@ un nombre; "Guardar mi ubicación actual" usa el GPS. Tocar una la fija como des
 coincide con el destino actual, venga de donde venga); el botón ⋮ (o pulsación larga) permite renombrar o eliminar. No se guardan dos
 favoritas a menos de 15 m. Los nombres se guardan sin acentos porque la pantalla del ESP32 no los dibuja.
 
+## Seguridad (revisión completa)
+**Modelo de acceso a los ajustes del ESP32 (WiFi, URL, token, habilitar lactancia)**
+- **Abierto por defecto**: cualquier móvil que se conecte puede mandarlos, así que se pueden usar varios móviles sin hacer nada. Es una
+  decisión de uso casero: la app no envía datos sensibles y quien tuviera el ESP32 en la mano podría reflashearlo de todos modos.
+- **Bloqueo opcional** (Lactancia > "Bloquear ajustes a móviles emparejados"): el ESP32 solo obedece a móviles **emparejados**, hasta 4 a la
+  vez. Para emparejar un móvil hay que ver el ESP32: muestra un código de 6 cifras (90 s, 3 intentos, 60 s de espera tras fallarlos) y el
+  móvil guarda una clave aleatoria de 128 bits que el ESP32 añade a su lista (el 5.º sustituye al más antiguo). Cada móvil se empareja una
+  vez. Perderlos todos no es un problema: con el código de la pantalla se empareja otro. Con la clave de un móvil emparejado se puede
+  quitar el bloqueo. (`DeviceConfig.h`, `EspConfig.kt`)
+
+**Corregido en la revisión**
+- La URL de la API debe ser `https://` (app y ESP32).
+- `allowBackup=false` + `dataExtractionRules`: claves WiFi, token y favoritas ya no se suben a copias de seguridad en la nube ni se transfieren;
+  para cambiar de móvil está Exportar/Importar (la clave de emparejamiento solo va si se incluyen las claves).
+- `BootReceiver` ya no está exportado y solo atiende las acciones esperadas; `usesCleartextTraffic=false` explícito.
+- `LinkResolver`: lista cerrada de dominios de Google (antes valía cualquier `google.xx`, y algunos, como `.tk` o `.top`, los registra cualquiera).
+- El texto que otras apps comparten con la app se acota a 4000 caracteres.
+- Los logs ya no incluyen nombres de destinos ni de favoritas (se comparten con otras personas).
+- Verificación opcional del certificado TLS: pon el certificado raíz de tu servidor en `API_CA_CERT` (`LactanciaConfig.h`).
+- Pruebas: la app compila contra el SDK real de Android (sin errores ni avisos); la lógica de `DeviceConfig.h` pasa 43 casos en un
+  entorno simulado (modo abierto, bloqueo, varios móviles, sustitución, persistencia, recuperación, caducidades, desbordamiento de
+  `millis()`); el parser de tramas BLE se probó con 20.000 entradas aleatorias bajo AddressSanitizer sin fallos.
+
+**Riesgos que quedan (conocidos)**
+- Con el bloqueo desactivado (por defecto), cualquiera con un móvil cerca del ESP32 puede cambiar sus ajustes (por ejemplo la URL de la API,
+  y con ella a dónde se envía el token). Activa el bloqueo si ese riesgo te importa.
+- El Bluetooth del ESP32 no cifra el enlace (emparejamiento "Just Works" sin exigir cifrado a las características): quien tenga un
+  sniffer BLE cerca *en el momento exacto* de emparejar o enviar ajustes podría leerlos.
+- Sin `API_CA_CERT` el ESP32 no comprueba el certificado del servidor (cifra, pero no sabe con quién habla): quien controle la red WiFi
+  podría interceptar el token. El token va en la URL (así lo exige la API), por lo que también queda en los logs del servidor.
+- Los mensajes de navegación/radar/brújula no se autentican (solo afectan a lo que se dibuja; no cambian ajustes).
+- Claves y token se guardan en texto plano en el almacenamiento privado del móvil y en la flash del ESP32 (sin cifrado de flash).
+
 ## Exportar / importar configuración (Ajustes > Herramientas)
 Genera/lee un `.json` (`ConfigBackup.kt`) con: ESP32 elegido, opciones de arranque, destino de la brújula, favoritas, avisos de radar y
 ajustes de lactancia (servidor, intervalo, redes WiFi). Al exportar se pregunta si se incluyen las claves WiFi y el token (texto plano).
 Importar muestra qué se va a sustituir y pide confirmación; solo cambia las secciones presentes en el archivo y valida cada valor.
 No incluye la base de radares, la caché de límites ni los logs (se vuelven a obtener), ni el "habilitado" de lactancia (vive en el ESP32).
+
+## Si la descarga de la DGT falla
+El resumen de la descarga ahora dice el motivo por dirección (`DGT falló (nap.dgt.es: HTTP 502; ...)`). Si la DGT responde pero el
+XML no se reconoce, el log guarda las etiquetas vistas y el inicio del archivo (`W/Radar: DGT ...: respuesta sin radares
+reconocibles`) para poder ajustar el lector. Overpass (OpenStreetMap) se consulta en tres espejos por si uno está saturado.
 
 ## Rendimiento y consumo
 **App**
@@ -84,7 +122,7 @@ No incluye la base de radares, la caché de límites ni los logs (se vuelven a o
 
 ## Avisos de radar
 Todo el cálculo lo hace la app (`radar/`); el ESP32 solo dibuja lo que llega.
-- **Datos** (`RadarUpdater`): DGT DATEX II (radares fijos y de tramo, CC-BY, sin Cataluña/País Vasco) + OpenStreetMap
+- **Datos** (`RadarUpdater`): DGT DATEX II desde `nap.dgt.es` (radares fijos y de tramo, CC-BY, sin Cataluña/País Vasco; la dirección antigua `infocar.dgt.es` daba HTTP 502 y queda como respaldo) + OpenStreetMap
   `highway=speed_camera` vía Overpass (cubre Cataluña/País Vasco y aporta `maxspeed`). Se descargan al pulsar
   "Base de radares" y se guardan en `filesDir/radares.json`; después funciona sin internet.
 - **Lógica** (`RadarMonitor`): con cada fix de GPS busca el radar más cercano por delante (±50° del rumbo), elige la franja

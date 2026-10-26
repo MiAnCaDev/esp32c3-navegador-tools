@@ -115,7 +115,7 @@ static void setNetErr(int code)
   if (code > 0)              snprintf(netErr, sizeof(netErr), "HTTP %d", code);
   else if (code == -1 && maxBlock < 20000)
                              snprintf(netErr, sizeof(netErr), "sin RAM (%uKB)", maxBlock / 1024);   // TLS necesita ~16 KB seguidos
-  else if (code == -1)       snprintf(netErr, sizeof(netErr), "no conecta");
+  else if (code == -1)       snprintf(netErr, sizeof(netErr), "%s", API_CA_CERT[0] ? "no conecta (cert?)" : "no conecta");
   else if (code == -11)      snprintf(netErr, sizeof(netErr), "timeout");
   else if (code == -5)       snprintf(netErr, sizeof(netErr), "conexion perdida");
   else if (code == -8)       snprintf(netErr, sizeof(netErr), "sin RAM");
@@ -128,6 +128,27 @@ static void logNetBody(const String &body)
   String b = body.length() > 160 ? body.substring(0, 160) : body;
   b.replace("\n", " "); b.replace("\r", " ");
   Serial.printf("[NET] respuesta (%u bytes): %s\n", (unsigned)body.length(), b.c_str());
+}
+
+// HTTPS. Con API_CA_CERT se verifica el certificado del servidor (hace falta la hora: se sincroniza por NTP);
+// vacio = setInsecure(): cifra pero no comprueba con quien se habla. false = no se puede hacer la peticion (netErr dice por que).
+static bool netTimeOk() { return time(nullptr) > 1700000000; }       // noviembre de 2023: el reloj ya está en hora
+
+static bool netPrepareTls(WiFiClientSecure &secure)
+{
+  if (!API_CA_CERT[0]) {
+    static bool warned = false;
+    if (!warned) { warned = true; Serial.println("[NET] AVISO: TLS sin verificar el certificado (API_CA_CERT vacio)"); }
+    secure.setInsecure();
+    return true;
+  }
+  if (!netTimeOk()) {
+    configTime(0, 0, "pool.ntp.org", "time.google.com");
+    for (int i = 0; i < 40 && !netTimeOk(); i++) vTaskDelay(pdMS_TO_TICKS(250));   // hasta 10 s
+    if (!netTimeOk()) { snprintf(netErr, sizeof(netErr), "sin hora (NTP)"); return false; }
+  }
+  secure.setCACert(API_CA_CERT);
+  return true;
 }
 
 // Ajustes comunes de la peticion
@@ -144,7 +165,7 @@ static bool httpGetEstado()
   String url = apiBaseEff() + "?token=" + apiTokenEff() + "&action=estado";
 
   WiFiClientSecure secure;
-  secure.setInsecure();   // ver nota al final del fichero
+  if (!netPrepareTls(secure)) return false;   // con API_CA_CERT: certificado verificado
   HTTPClient http;
   if (!http.begin(secure, url)) {
     logNetFail("begin", 0);
@@ -186,7 +207,7 @@ static bool httpPostAccion(const char *body)
   String url = apiBaseEff() + "?token=" + apiTokenEff();
 
   WiFiClientSecure secure;
-  secure.setInsecure();
+  if (!netPrepareTls(secure)) return false;
   HTTPClient http;
   if (!http.begin(secure, url)) {
     logNetFail("begin", 0);
@@ -743,10 +764,9 @@ void babyLoop()   // en loop(), solo cuando appMode == true
 }
 
 /*
-  NOTA sobre HTTPS: setInsecure() cifra pero no comprueba el certificado del
-  servidor. Es razonable para un dispositivo casero protegido por token; si
-  quieres validar el certificado, usa secure.setCACert(...) con el certificado
-  raiz de control-panel.legioagro.com.
+  NOTA sobre HTTPS: sin API_CA_CERT (LactanciaConfig.h) se usa setInsecure(): cifra pero no comprueba el
+  certificado del servidor, asi que quien controle la red WiFi a la que se conecta el ESP32 podria interceptar
+  el token. Con el certificado raiz del servidor en API_CA_CERT SI se comprueba (y se sincroniza la hora por NTP).
 
   NOTA sobre "dormir": el endpoint ignora el campo 'accion' y simplemente
   alterna el estado en el servidor (si habia un sueno abierto lo cierra, si no

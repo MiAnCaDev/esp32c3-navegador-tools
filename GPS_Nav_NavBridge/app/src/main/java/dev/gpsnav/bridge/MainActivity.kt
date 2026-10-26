@@ -26,6 +26,7 @@ import android.os.Looper
 import android.os.PowerManager
 import android.provider.MediaStore
 import android.provider.Settings
+import android.text.InputFilter
 import android.text.InputType
 import android.text.TextUtils
 import android.util.TypedValue
@@ -70,6 +71,10 @@ class MainActivity : Activity() {
     private var lactSwitch: SwitchRef? = null
     private var lactUpdating = false
     private var rowLactNet: Row? = null
+    private var rowPair: Row? = null
+    private var lockSwitch: SwitchRef? = null
+    private var lockUpdating = false
+    private var pairDialogOpen = false
     private var rowRadarCfg: Row? = null
     private var rowRadarDb: Row? = null
 
@@ -470,15 +475,31 @@ class MainActivity : Activity() {
         val lact = card(lactPage, "MODO LACTANCIA")
         lactSwitch = switchRow(lact, "Habilitar modo lactancia en el ESP32",
             EspConfig.statusText(), EspConfig.shownLact()) { on ->
-            if (!lactUpdating) Toast.makeText(this, EspConfig.requestLact(on), Toast.LENGTH_LONG).show()
+            if (!lactUpdating) {
+                Toast.makeText(this, EspConfig.requestLact(on), Toast.LENGTH_LONG).show()
+                if (EspConfig.consumeNeedPair()) startPairFlow()
+            }
         }
+        divider(lact)
+        // Bloqueo OPCIONAL: abierto por defecto. Activado, el ESP32 solo obedece a móviles emparejados (hasta 4)
+        lockSwitch = switchRow(lact, "Bloquear ajustes a móviles emparejados", EspConfig.lockText(), EspConfig.lockOn()) { on ->
+            if (!lockUpdating) {
+                lockSwitch?.let { lockUpdating = true; it.sw.isChecked = !on; lockUpdating = false }   // el interruptor refleja el estado REAL del ESP32
+                if (on) startPairFlow() else Toast.makeText(this, EspConfig.requestUnlock(), Toast.LENGTH_LONG).show()
+                if (!on && EspConfig.consumeNeedPair()) startPairFlow()
+            }
+        }
+        divider(lact)
+        rowPair = settingsRow(lact, "🔑", col(R.color.primary), "Emparejar este móvil", EspConfig.pairText()) { startPairFlow() }
         divider(lact)
         rowLactNet = settingsRow(lact, "⚙", col(R.color.primary), "Servidor y WiFi del ESP32", EspConfig.netSummary()) { lactNetDialog() }
         lact.addView(
             label("Viene deshabilitado de fábrica: mientras no lo actives aquí, el botón del ESP32 no cambia de modo. " +
                 "Al pulsarlo, el ESP32 se reinicia en modo lactancia (Bluetooth apagado, unos 2 s) y vuelve a modo GPS " +
                 "del mismo modo. Los ajustes de servidor y WiFi se envían con el ESP32 conectado y se aplican la próxima " +
-                "vez que entre en lactancia.", 12f, col(R.color.text_muted)),
+                "vez que entre en lactancia. Por defecto cualquier móvil puede cambiar estos ajustes (puedes usar varios). Si quieres que solo " +
+                "lo hagan móviles emparejados, activa el bloqueo.",
+                12f, col(R.color.text_muted)),
             lp(top = 8)
         )
 
@@ -719,7 +740,8 @@ class MainActivity : Activity() {
     /** Un lugar compartido desde Google Maps (o cualquier texto con coordenadas/enlace) llega aquí. */
     private fun handleShareIntent(i: Intent?) {
         if (i == null || i.action != Intent.ACTION_SEND) return
-        val text = i.getStringExtra(Intent.EXTRA_TEXT) ?: return
+        // Cualquier app puede "compartir" texto con esta: se acota para que uno enorme no bloquee la pantalla
+        val text = (i.getStringExtra(Intent.EXTRA_TEXT) ?: return).take(4_000)
         AppLog.i("UI", "Texto compartido con la app (${text.length} caracteres)")
         showTab(TAB_NAV)                       // el destino de la brújula está en Navegación
         val c = DestParser.parse(text)
@@ -786,7 +808,7 @@ class MainActivity : Activity() {
         catch (e: Exception) { Toast.makeText(this, "No hay ninguna app para elegir archivos.", Toast.LENGTH_LONG).show() }
     }
 
-    @Suppress("DEPRECATION")
+    @Suppress("DEPRECATION", "OVERRIDE_DEPRECATION")
     override fun onActivityResult(requestCode: Int, resultCode: Int, data: Intent?) {
         super.onActivityResult(requestCode, resultCode, data)
         if (resultCode != RESULT_OK) return
@@ -969,7 +991,7 @@ class MainActivity : Activity() {
         if (scrollTo != null) scrolls[i].post { scrolls[i].smoothScrollTo(0, scrollTo.top) }
     }
 
-    @Suppress("DEPRECATION")
+    @Suppress("DEPRECATION", "OVERRIDE_DEPRECATION")
     override fun onBackPressed() {
         if (currentTab != TAB_HOME) showTab(TAB_HOME) else super.onBackPressed()   // atrás vuelve primero a Inicio
     }
@@ -986,6 +1008,38 @@ class MainActivity : Activity() {
         if (ref.sw.isChecked != shown) { lactUpdating = true; ref.sw.isChecked = shown; lactUpdating = false }
         ref.sub.setIfChanged(EspConfig.statusText())
         rowLactNet?.sub?.setIfChanged(EspConfig.netSummary())
+        rowPair?.sub?.setIfChanged(EspConfig.pairText())
+        lockSwitch?.let { ls ->
+            if (ls.sw.isChecked != EspConfig.lockOn()) { lockUpdating = true; ls.sw.isChecked = EspConfig.lockOn(); lockUpdating = false }
+            ls.sub.setIfChanged(EspConfig.lockText())
+        }
+        EspConfig.consumePairMessage()?.let { Toast.makeText(this, it, Toast.LENGTH_LONG).show() }
+        if (EspConfig.consumeNeedPair()) startPairFlow()
+    }
+
+    /** Emparejar: el ESP32 enseña un código de 6 cifras en SU pantalla y aquí se escribe. Solo así acepta ajustes. */
+    private fun startPairFlow() {
+        if (pairDialogOpen) return
+        val err = EspConfig.startPairing()
+        if (err != null) { Toast.makeText(this, err, Toast.LENGTH_LONG).show(); return }
+        pairDialogOpen = true
+        val et = EditText(this).apply {
+            inputType = InputType.TYPE_CLASS_NUMBER; hint = "000000"; setSingleLine()
+            filters = arrayOf(InputFilter.LengthFilter(6))
+        }
+        val box = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL; setPadding(dp(20), dp(4), dp(20), dp(4)) }
+        box.addView(et)
+        AlertDialog.Builder(this).setTitle("Emparejar con el ESP32")
+            .setMessage("Mira la pantalla del ESP32: debe enseñar un código de 6 cifras (dura 90 s; tocarlo lo cierra). " +
+                "Escríbelo aquí. Al emparejar se activa el bloqueo: solo los móviles emparejados (hasta 4) podrán cambiar " +
+                "los ajustes del ESP32. Cada móvil se empareja una vez.")
+            .setView(box)
+            .setPositiveButton("Emparejar") { _, _ ->
+                EspConfig.confirmPairing(et.text.toString())?.let { Toast.makeText(this, it, Toast.LENGTH_LONG).show() }
+            }
+            .setNegativeButton("Cancelar", null)
+            .setOnDismissListener { pairDialogOpen = false }
+            .show()
     }
 
     private fun lactNetDialog() {
@@ -1034,11 +1088,13 @@ class MainActivity : Activity() {
                     err ?: "Enviado al ESP32 ✓. Se aplica la próxima vez que entre en modo lactancia.",
                     Toast.LENGTH_LONG).show()
                 rowLactNet?.sub?.text = EspConfig.netSummary()
+                if (EspConfig.consumeNeedPair()) startPairFlow()
             }
             .setNeutralButton("Valores por defecto") { _, _ ->
                 val err = EspConfig.sendReset()
                 Toast.makeText(this, err ?: "Restaurados los valores por defecto del firmware", Toast.LENGTH_LONG).show()
                 rowLactNet?.sub?.text = EspConfig.netSummary()
+                if (EspConfig.consumeNeedPair()) startPairFlow()
             }
             .setNegativeButton("Cancelar", null).show()
     }

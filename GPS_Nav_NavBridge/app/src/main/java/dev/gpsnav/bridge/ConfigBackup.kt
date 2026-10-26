@@ -75,7 +75,10 @@ object ConfigBackup {
             wifi.put(w)
         }
         val lact = JSONObject().put("api", n.api).put("pollSec", n.pollSec).put("wifi", wifi)
-        if (includeSecrets) lact.put("token", n.tok)
+        if (includeSecrets) {
+            lact.put("token", n.tok)
+            EspConfig.exportKey().takeIf { it.isNotEmpty() }?.let { lact.put("pairKey", it) }   // para no volver a emparejar en el móvil nuevo
+        }
         o.put("lactancia", lact)
         return o.toString(2)
     }
@@ -205,13 +208,16 @@ object ConfigBackup {
             }
             val token = if (l.has("token")) l.optString("token", "").take(EspConfig.MAX_TOKEN) else cur.tok
             val net = EspConfig.Net(
-                api = l.optString("api", "").take(EspConfig.MAX_API), tok = token,
+                api = l.optString("api", "").take(EspConfig.MAX_API).takeIf { it.isEmpty() || it.startsWith("https://", ignoreCase = true) } ?: "", tok = token,
                 pollSec = l.optInt("pollSec", 0).coerceIn(0, 3600), wifi = wifi
             )
             val nets = wifi.count { it.first.isNotEmpty() }
             lines.add("Lactancia: ${if (net.api.isNotEmpty()) "servidor propio, " else ""}$nets red${if (nets == 1) "" else "es"} WiFi" +
-                if (o.optBoolean("includesSecrets", false)) " (con claves)" else "")
-            if (ctx != null) EspConfig.saveNet(net)
+                if (o.optBoolean("includesSecrets", false)) " (con claves${if (l.has("pairKey")) " y emparejamiento" else ""})" else "")
+            if (ctx != null) {
+                EspConfig.saveNet(net)
+                if (l.has("pairKey")) EspConfig.importKey(l.optString("pairKey", ""))
+            }
         }
         return Result(lines, deviceChanged)
     }

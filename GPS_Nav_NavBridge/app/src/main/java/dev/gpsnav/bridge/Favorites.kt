@@ -60,7 +60,7 @@ object Favorites {
         at(lat, lon)?.let { return "Ya está guardada como «${it.name}»." }
         val n = Destination.cleanName(name)            // la pantalla del ESP32 solo pinta caracteres sin acentos
         save(ctx, items + Fav(n, lat, lon))
-        AppLog.i("Fav", "Favorita añadida: '$n' (${items.size}/$MAX)")
+        AppLog.i("Fav", "Favorita añadida (${items.size}/$MAX)")
         return null
     }
 
@@ -78,7 +78,7 @@ object Favorites {
 
     fun remove(ctx: Context, index: Int) {
         if (index !in items.indices) return
-        AppLog.i("Fav", "Favorita eliminada: '${items[index].name}'")
+        AppLog.i("Fav", "Favorita eliminada")
         save(ctx, items.filterIndexed { i, _ -> i != index })
     }
 }
