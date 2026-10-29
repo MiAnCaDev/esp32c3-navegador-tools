@@ -20,7 +20,7 @@ El proyecto se divide en las siguientes carpetas y componentes principales:
 | Carpeta / Componente | Descripción |
 | :--- | :--- |
 | **`GPS_Nav_Display`** | Versión que utiliza la aplicación de terceros **GadgetBridge** para enviar los datos de Google Maps. |
-| **`GPS_Nav_NavBridge`** | Versión con aplicación propia desarrollada para el proyecto. ¡Puedes descargar el APK directamente! |
+| **`GPS_Nav_NavBridge`** | Versión con aplicación propia desarrollada para el proyecto. ¡Puedes descargar el APK directamente! ([Descarga](https://github.com/MiAnCaDev/esp32c3-navegador-tools/tree/main/GPS_Nav_NavBridge/apk)) |
 | **`Informacion adicional`** | Documentación, imágenes y guías de configuración del hardware y software. |
 | **`prueba_colores`** | Script de prueba para verificar la correcta visualización de colores en la pantalla. |
 | **`prueba_tactil`** | Script de prueba para comprobar el funcionamiento del panel táctil. |
