@@ -6,7 +6,7 @@ La parte del bot de Lactancia es algo mas personal e individualizado, no afecta 
 
 Placa de desarrollo ESP32-C3 con pantalla ST7789 de 1.69 pulgadas (Imágenes al final del Readme.md)
 
-Se puede utilizar como GPS o como brújula. Además tiene un modo moto para guardar tus rutas y obtener datos de las mismas, como la inclinación.
+La versión con app propia GPS_Nav_NavBridge: Se puede utilizar como GPS o como brújula. Además tiene un modo moto para guardar tus rutas y obtener datos de las mismas, como la inclinación.
 
 ---
 
