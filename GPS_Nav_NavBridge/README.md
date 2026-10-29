@@ -46,11 +46,51 @@ En `LactanciaApp.h` (solo cambian las funciones de red y el texto de estado; el 
   que se quedaba corto si el servidor añadía campos (una respuesta 200 correcta contaba como error).
 - Se siguen las redirecciones 301/302 y los tiempos pasan de 4/5 s a 6/8 s.
 
+## Modo moto (inclinación máxima en el ESP32)
+Interruptor en Moto > MODO MOTO. Activado, el móvil calcula la inclinación (ver "Moto: grabar viajes") y manda al ESP32 la **máxima desde
+que se activó** (`{"t":"moto","on":1,"txt":"MOTO 47 IZQ"}`, solo ASCII); el ESP32 la dibuja en la esquina superior izquierda de la zona libre
+(`motoChip`). Al activarlo el máximo vuelve a cero. Solo cuentan inclinaciones mantenidas 0,3 s (`SustainedLean`): un bache o un pico de
+ruido no es "inclinación máxima".
+- **Se desactiva solo cuando el ESP32 se desconecta** (`BridgeService` lo detecta) y hay que volver a activarlo a mano; no se puede activar
+  sin el ESP32 conectado. El ESP32 también oculta el aviso si pierde el Bluetooth o pasan 8 s sin mensajes. Si el servicio se detiene
+  ("Parar"), también se desactiva.
+- Es independiente de **Grabar viaje**: se pueden usar a la vez o por separado; el modo moto no guarda nada.
+
+## Botón de lactancia del ESP32: ocultarlo + indicador de Bluetooth
+- Lactancia **habilitada**: el botón se ve y funciona.
+- Lactancia **deshabilitada** (por defecto): si "Ocultar el botón del ESP32 si la lactancia está desactivada" está **apagado** (por defecto), el botón
+  se ve y al pulsarlo avisa de que hay que activarla en la app (como antes). Si está **encendido**, el botón no se muestra y en su sitio sale
+  un recuadro **BT**: azul = móvil conectado por Bluetooth, gris = sin conexión.
+- El ajuste se guarda en el ESP32 (`hidebtn`, NVS; mismo control de acceso que el resto de ajustes) y la app muestra su estado real.
+
+## Moto: grabar viajes (pestaña Moto)
+Graba ruta, velocidad, aceleración e **inclinación** y las curvas del viaje, y lo guarda en el móvil (`moto/`).
+- **Qué hardware usa**: el del móvil (GPS, acelerómetro, giroscopio). El ESP32 de esta placa solo tiene pantalla táctil por I2C y ningún
+  acelerómetro conocido, así que no interviene en la medida. Sin giroscopio se graba la ruta pero no la inclinación.
+- **Inclinación** (`LeanEstimator`): `sen φ = v·m/g`, con `v` = velocidad del GPS y `m` = giro del giroscopio proyectado sobre la dirección
+  del acelerómetro filtrado. No depende de cómo vaya colocado el móvil ni necesita calibrar. Se corrige solo el sesgo del giroscopio
+  (parado y en rectas). No se calcula por debajo de 14 km/h. Probado con una moto simulada (vibración, ruido, sesgo, 40 orientaciones
+  aleatorias del móvil, 43-108 km/h): error típico ~0,75°, peor instante ~3°. Modelo de moto ideal: no incluye el grosor del neumático ni
+  al piloto colgado del lateral, así que sirve para comparar curvas y viajes, no como medida de laboratorio.
+- **Curvas** (`CurveDetector`): empiezan al pasar de 12°, acaban al bajar de 8° (o cambiar de lado: una "S" son dos curvas); solo cuentan
+  las de al menos 15° y 1,2 s.
+- **Datos guardados**: un punto por segundo (posición, altitud, velocidad, rumbo, inclinación y su pico del último segundo, g lateral y
+  longitudinal) y las curvas. El archivo se escribe sobre la marcha: si la app se cierra a mitad de un viaje se recupera al listar.
+- **Exportar**: GPX 1.1 (ruta + las curvas como puntos de interés "Curva izq 41°" + velocidad/inclinación/g como extensión `moto:`) y CSV.
+  Se pueden compartir o guardar donde se quiera desde cada viaje.
+- **Segundo plano**: usa el servicio en primer plano de la app (GPS) y un wake-lock parcial mientras graba (sin él, con la pantalla apagada
+  Android deja de entregar muestras del giroscopio). Al parar el servicio ("Parar" en Inicio) el viaje se cierra y se guarda. El GPS no
+  se pausa mientras se graba.
+- **Dos usos independientes**: *Grabar viaje* (guarda el viaje) y *Modo moto* (inclinación máxima en el ESP32, ver arriba); comparten sensores
+  y se apagan cuando no queda ninguno.
+- **Pestañas**: Ajustes > Pestañas muestra u oculta Moto (visible por defecto) y Lactancia (oculta por defecto).
+
 ## Pantallas de la app (barra de pestañas inferior)
 - **Inicio**: Iniciar/Parar con el estado y la velocidad, y justo debajo el dispositivo ESP32. Si falta algún permiso imprescindible
   sale un aviso que lleva directo a Ajustes (y la pestaña Ajustes muestra un punto rojo).
 - **Navegación**: destino de la brújula, ubicaciones favoritas (hasta 8), avisos de radar y pruebas de mensajes al ESP32.
-- **Lactancia**: habilitar el modo y servidor/WiFi del ESP32.
+- **Moto**: grabación de viajes con medidor de inclinación, y lista de viajes guardados (GPX/CSV).
+- **Lactancia** (opcional, oculta por defecto): habilitar el modo y servidor/WiFi del ESP32.
 - **Ajustes**: arranque, configuración inicial, herramientas (logs) y acerca de.
 "Atrás" desde cualquier pestaña vuelve primero a Inicio; la pestaña activa se recuerda al girar la pantalla.
 

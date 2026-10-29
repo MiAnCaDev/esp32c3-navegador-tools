@@ -21,6 +21,8 @@
     {"t":"cfg","get":1}                      -> (sin clave) el ESP32 contesta con su estado (sin secretos)
     {"t":"cfg","lock":0}                     -> (con clave) quita el bloqueo y olvida las claves: otra vez abierto
     {"t":"cfg","lact":1}                     -> habilita (1) / deshabilita (0) el modo lactancia
+    {"t":"cfg","hidebtn":1}                  -> oculta el boton de lactancia del ESP32 mientras la lactancia esta deshabilitada
+                                                (en su lugar se ve si el movil esta conectado por Bluetooth)
     {"t":"cfg","api":"https://..."}          -> URL de la API, solo https ("" = volver a la del firmware)
     {"t":"cfg","tok":"..."}                  -> token de la API ("" = volver al del firmware)
     {"t":"cfg","poll":60}                    -> segundos entre consultas (0 = el valor del firmware)
@@ -28,7 +30,7 @@
     {"t":"cfg","reset":1}                    -> borra API, token, intervalo y redes: vuelven los valores por defecto
 
   Respuesta (notificacion, nunca incluye claves ni token):
-    {"t":"cfg","lact":0,"api":0,"tok":0,"wifi":0,"poll":0,"lock":0,"keys":0,"mine":0,"note":"..."}
+    {"t":"cfg","lact":0,"api":0,"tok":0,"wifi":0,"poll":0,"lock":0,"keys":0,"mine":0,"hide":0,"note":"..."}
     lock = bloqueo activo · keys = moviles emparejados · mine = la clave "k" de ESTE mensaje es valida
     note (opcional): show = codigo en pantalla · paired = codigo aceptado · wrongcode · expired · bad · wait · auth (bloqueado y
     la clave falta o no vale)
@@ -48,6 +50,7 @@
 struct CfgWifi { char ssid[33]; char pass[65]; };
 
 static bool     lactEnabled = false;    // el boton de modo lactancia solo funciona si es true (por defecto false)
+static bool     cfgHideBtn  = false;    // true = con la lactancia deshabilitada el boton NO se muestra (sale el indicador de Bluetooth)
 static bool     cfgBootLact = false;    // este arranque es en modo lactancia (BLE apagado desde el principio)
 static char     cfgApi[200] = "";       // "" = usar API_BASE del firmware
 static char     cfgTok[80]  = "";       // "" = usar API_TOKEN del firmware
@@ -59,6 +62,7 @@ static Preferences cfgPrefs;
 void cfgSendStatus(const char *note, int mine);   // notifica el estado al movil; note = nullptr o un aviso; mine = 0/1
 void cfgShowPairCode(const char *code); // enseña el codigo de emparejamiento en la pantalla
 void cfgHidePairCode();
+void cfgApplied();                      // se llama tras aplicar un mensaje cfg: el .ino actualiza lo que dependa (botones...)
 
 #define CFG_MAX_KEYS 4
 static char     cfgKeys[CFG_MAX_KEYS][33];  // claves (32 hex) de los moviles emparejados; "" = hueco libre
@@ -155,6 +159,7 @@ static void cfgLoad()
   cfgBootLact = false;
   cfgPrefs.begin("navcfg", false);
   lactEnabled = (ENABLE_LACTANCIA) && cfgPrefs.getBool("lact", false);
+  cfgHideBtn  = cfgPrefs.getBool("hidebtn", false);
   cfgReadStr("api", cfgApi, sizeof(cfgApi));
   cfgReadStr("tok", cfgTok, sizeof(cfgTok));
   cfgPollMs = cfgPrefs.getUInt("poll", 0) * 1000UL;
@@ -198,9 +203,9 @@ static void cfgStatusJson(char *out, size_t n, const char *note, int mine)
 {
   int wifi = 0;
   for (int i = 0; i < CFG_MAX_WIFI; i++) if (cfgWifi[i].ssid[0]) wifi++;
-  int w = snprintf(out, n, "{\"t\":\"cfg\",\"lact\":%d,\"api\":%d,\"tok\":%d,\"wifi\":%d,\"poll\":%u,\"lock\":%d,\"keys\":%d,\"mine\":%d",
+  int w = snprintf(out, n, "{\"t\":\"cfg\",\"lact\":%d,\"api\":%d,\"tok\":%d,\"wifi\":%d,\"poll\":%u,\"lock\":%d,\"keys\":%d,\"mine\":%d,\"hide\":%d",
                    lactEnabled ? 1 : 0, cfgApi[0] ? 1 : 0, cfgTok[0] ? 1 : 0, wifi,
-                   (unsigned)(cfgPollMs / 1000UL), cfgLock ? 1 : 0, cfgKeyCount(), mine ? 1 : 0);
+                   (unsigned)(cfgPollMs / 1000UL), cfgLock ? 1 : 0, cfgKeyCount(), mine ? 1 : 0, cfgHideBtn ? 1 : 0);
   if (w > 0 && (size_t)w < n) {
     if (note && note[0]) snprintf(out + w, n - w, ",\"note\":\"%s\"}\n", note);
     else                 snprintf(out + w, n - w, "}\n");
@@ -270,6 +275,11 @@ static void cfgHandleJson(JsonDocument &doc)
     if (cfgPrefs.getBool("lact", false) != v) cfgPrefs.putBool("lact", v);
     lactEnabled = (ENABLE_LACTANCIA) && v;
   }
+  if (!doc["hidebtn"].isNull()) {
+    bool v = ((int)(doc["hidebtn"] | 0)) != 0;
+    if (cfgPrefs.getBool("hidebtn", false) != v) cfgPrefs.putBool("hidebtn", v);
+    cfgHideBtn = v;
+  }
   if (!doc["api"].isNull()) {
     const char *u = doc["api"] | "";
     // Solo HTTPS (o vacio = la del firmware): con http:// el token viajaria sin cifrar
@@ -293,5 +303,6 @@ static void cfgHandleJson(JsonDocument &doc)
       snprintf(kk, sizeof(kk), "wp%d", i); cfgSetStr(kk, cfgWifi[i].pass, sizeof(cfgWifi[i].pass), doc["p"] | "");
     }
   }
+  cfgApplied();                                      // el .ino actualiza botones/indicadores si hace falta
   cfgSendStatus(nullptr, cfgKeyMatch(k) ? 1 : 0);   // confirma al movil
 }

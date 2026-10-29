@@ -16,6 +16,8 @@
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_CONNECTED_DEVICE" />
     <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
     <uses-permission android:name="android.permission.VIBRATE" />
+    <!-- Grabar un viaje en moto con la pantalla apagada: sin esto Android deja de entregar las muestras del giroscopio -->
+    <uses-permission android:name="android.permission.WAKE_LOCK" />
     <!-- Solo para resolver enlaces cortos de Google Maps que el usuario comparte con la app -->
     <uses-permission android:name="android.permission.INTERNET" />
     <uses-permission android:name="android.permission.RECEIVE_BOOT_COMPLETED" />

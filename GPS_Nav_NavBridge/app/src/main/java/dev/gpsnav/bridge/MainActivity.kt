@@ -35,6 +35,11 @@ import android.view.View
 import android.view.ViewGroup
 import android.widget.*
 import androidx.core.app.NotificationManagerCompat
+import dev.gpsnav.bridge.moto.LeanGaugeView
+import dev.gpsnav.bridge.moto.MotoRecorder
+import dev.gpsnav.bridge.moto.TripExport
+import dev.gpsnav.bridge.moto.TripStore
+import dev.gpsnav.bridge.moto.TripSummary
 import dev.gpsnav.bridge.radar.RadarConfig
 import dev.gpsnav.bridge.radar.RadarDb
 import dev.gpsnav.bridge.radar.RadarMonitor
@@ -53,12 +58,14 @@ private const val WRAP = ViewGroup.LayoutParams.WRAP_CONTENT
 // Pestañas de la barra inferior
 private const val TAB_HOME = 0
 private const val TAB_NAV = 1
-private const val TAB_LACT = 2
-private const val TAB_SETTINGS = 3
+private const val TAB_MOTO = 2
+private const val TAB_LACT = 3
+private const val TAB_SETTINGS = 4
 
 // Códigos de las pantallas de archivos (exportar / importar configuración)
 private const val REQ_EXPORT = 4101
 private const val REQ_IMPORT = 4102
+private const val REQ_TRIP = 4103          // guardar un viaje (GPX/CSV) donde elija el usuario
 
 /** Pantalla principal: estado, configuración inicial, dispositivo, opciones, logs y datos del desarrollador. */
 class MainActivity : Activity() {
@@ -73,6 +80,8 @@ class MainActivity : Activity() {
     private var rowLactNet: Row? = null
     private var rowPair: Row? = null
     private var lockSwitch: SwitchRef? = null
+    private var hideSwitch: SwitchRef? = null
+    private var hideUpdating = false
     private var lockUpdating = false
     private var pairDialogOpen = false
     private var rowRadarCfg: Row? = null
@@ -288,7 +297,7 @@ class MainActivity : Activity() {
         // Imprescindible: permisos y acceso a notificaciones (batería y ubicación permanente son recomendados)
         val critical = !(permissionsOk() && listener)
         setupBanner.visibility = if (critical) View.VISIBLE else View.GONE
-        tabRefs.getOrNull(TAB_SETTINGS)?.dot?.visibility = if (critical) View.VISIBLE else View.GONE
+        tabRefs[TAB_SETTINGS]?.dot?.visibility = if (critical) View.VISIBLE else View.GONE
     }
 
     private fun refresh() { refreshStatus(); refreshPerms() }
@@ -305,6 +314,8 @@ class MainActivity : Activity() {
         val nav = page()
         val lactPage = page()
         val settings = page()
+        val motoPage = page()
+        pageTitle(motoPage, "Moto", "Graba tus viajes: ruta, aceleración e inclinación en cada curva")
         pageTitle(nav, "Navegación", "Brújula, avisos de radar y pruebas de mensajes al ESP32")
         pageTitle(lactPage, "Modo lactancia", "App de lactancia del ESP32")
         pageTitle(settings, "Ajustes", "Arranque, configuración inicial y herramientas")
@@ -471,12 +482,76 @@ class MainActivity : Activity() {
             lp(top = 6)
         )
 
+        // --- Moto: modo moto (inclinación máxima en el ESP32)
+        val mode = card(motoPage, "MODO MOTO")
+        modeSwitch = switchRow(mode, "Modo moto", "Muestra en el ESP32 la inclinación máxima desde que lo activas.",
+            MotoRecorder.modeOn) { on ->
+            if (!modeUpdating) {
+                if (on && BridgeHub.link?.ready != true) {
+                    Toast.makeText(this, "Conecta primero el ESP32 (pulsa Iniciar en Inicio y espera a ver «Conectado»).", Toast.LENGTH_LONG).show()
+                    modeSwitch?.let { modeUpdating = true; it.sw.isChecked = false; modeUpdating = false }
+                } else {
+                    MotoRecorder.setMode(this, on)
+                }
+            }
+        }
+        motoModeInfo = label("", 13f, col(R.color.text_muted))
+        mode.addView(motoModeInfo, lp(top = 6))
+        mode.addView(label("Se desactiva solo cuando el ESP32 se desconecta y hay que volver a activarlo a mano. Se puede usar a la vez " +
+            "que la grabación de un viaje o sin ella; no guarda nada.", 12f, col(R.color.text_muted)), lp(top = 6))
+
+        // --- Moto: grabación de viajes
+        val rec = card(motoPage, "GRABACIÓN")
+        motoGauge = LeanGaugeView(this)
+        rec.addView(motoGauge, lp(h = dp(175), bottom = 4))
+        motoStatus = label("", 13f, col(R.color.text_muted)).apply { gravity = Gravity.CENTER }
+        rec.addView(motoStatus, lp(bottom = 8))
+        val grid = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
+        fun cell(key: String, title: String): LinearLayout {
+            val box = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL; setPadding(0, dp(4), 0, dp(4)) }
+            box.addView(label(title, 12f, col(R.color.text_muted)))
+            val v = label("—", 18f, col(R.color.text), true); motoVals[key] = v
+            box.addView(v)
+            return box
+        }
+        fun row(k1: String, t1: String, k2: String, t2: String) {
+            val r = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
+            r.addView(cell(k1, t1), lp(w = 0, weight = 1f)); r.addView(cell(k2, t2), lp(w = 0, weight = 1f))
+            grid.addView(r, lp())
+        }
+        row("speed", "Velocidad", "dist", "Distancia")
+        row("left", "Máx. inclinación izquierda", "right", "Máx. inclinación derecha")
+        row("latg", "G lateral", "long", "Aceleración (G)")
+        row("time", "Tiempo", "curves", "Curvas")
+        rec.addView(grid, lp(bottom = 8))
+        motoButton = button("Iniciar grabación", col(R.color.primary), Color.WHITE) { toggleRecording() }
+        rec.addView(motoButton, lp(h = dp(52)))
+        rec.addView(label("Lleva el móvil sujeto a la moto (manillar o depósito) o en un bolsillo interior de la chaqueta; no hace falta " +
+            "calibrar ni ponerlo recto. La inclinación se calcula con la velocidad del GPS y el giroscopio, así que es una buena estimación " +
+            "(típicamente ±1°, algo más con mucha vibración) y no se mide por debajo de 14 km/h. La grabación sigue con la pantalla apagada.",
+            12f, col(R.color.text_muted)), lp(top = 10))
+
+        val trips = card(motoPage, "VIAJES GUARDADOS")
+        motoTripsCard = trips
+        motoTripList = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
+        trips.addView(motoTripList, lp())
+        refreshTrips()
+
         // --- Modo lactancia (ajustes que viven en el ESP32)
         val lact = card(lactPage, "MODO LACTANCIA")
         lactSwitch = switchRow(lact, "Habilitar modo lactancia en el ESP32",
             EspConfig.statusText(), EspConfig.shownLact()) { on ->
             if (!lactUpdating) {
                 Toast.makeText(this, EspConfig.requestLact(on), Toast.LENGTH_LONG).show()
+                if (EspConfig.consumeNeedPair()) startPairFlow()
+            }
+        }
+        divider(lact)
+        hideSwitch = switchRow(lact, "Ocultar el botón del ESP32 si la lactancia está desactivada",
+            "El botón no se muestra y en su lugar el ESP32 enseña si el móvil está conectado por Bluetooth. Con la lactancia habilitada el botón siempre se ve.",
+            EspConfig.shownHide()) { on ->
+            if (!hideUpdating) {
+                Toast.makeText(this, EspConfig.requestHideBtn(on), Toast.LENGTH_LONG).show()
                 if (EspConfig.consumeNeedPair()) startPairFlow()
             }
         }
@@ -516,6 +591,13 @@ class MainActivity : Activity() {
         tests.addView(button("Probar aviso de radar", col(R.color.chip_neutral), col(R.color.text)) { testRadarDialog() }, lp(h = dp(48)))
 
         // --- Acerca de
+        val tabsCard = card(settings, "PESTAÑAS")
+        switchRow(tabsCard, "Mostrar pestaña Moto", "Grabación de viajes en moto: ruta, aceleración e inclinación",
+            Prefs.tabMoto(this)) { Prefs.setTabMoto(this, it); recreate() }
+        divider(tabsCard)
+        switchRow(tabsCard, "Mostrar pestaña Lactancia", "Solo tiene sentido si usas el bot de Telegram de lactancia",
+            Prefs.tabLact(this)) { Prefs.setTabLact(this, it); recreate() }
+
         val about = card(settings, "ACERCA DE")
         val aboutTop = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL; gravity = Gravity.CENTER_VERTICAL }
         aboutTop.addView(ImageView(this).apply { setImageResource(R.drawable.logo) }, LinearLayout.LayoutParams(dp(44), dp(44)))
@@ -535,9 +617,10 @@ class MainActivity : Activity() {
         setupBanner.setOnClickListener { showTab(TAB_SETTINGS, scrollTo = setup) }
 
         // Contenedor: páginas arriba (solo una visible) y barra de pestañas abajo
-        scrolls = listOf(home, nav, lactPage, settings).map { pg -> ScrollView(this).apply { addView(pg); visibility = View.GONE } }
+        scrolls = mapOf(TAB_HOME to home, TAB_NAV to nav, TAB_MOTO to motoPage, TAB_LACT to lactPage, TAB_SETTINGS to settings)
+            .mapValues { (_, pg) -> ScrollView(this).apply { addView(pg); visibility = View.GONE } }
         val frame = FrameLayout(this)
-        scrolls.forEach { frame.addView(it, FrameLayout.LayoutParams(MATCH, MATCH)) }
+        scrolls.values.forEach { frame.addView(it, FrameLayout.LayoutParams(MATCH, MATCH)) }
         val shell = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
         shell.addView(frame, lp(h = 0, weight = 1f))
         shell.addView(buildTabBar())
@@ -553,8 +636,8 @@ class MainActivity : Activity() {
         handleShareIntent(intent)
     }
 
-    override fun onResume() { super.onResume(); lastRunning = null; refreshPerms(); ui.post(tick) }
-    override fun onPause() { super.onPause(); ui.removeCallbacks(tick) }
+    override fun onResume() { super.onResume(); lastRunning = null; refreshPerms(); ui.post(tick); if (currentTab == TAB_MOTO) ui.post(motoTick) }
+    override fun onPause() { super.onPause(); ui.removeCallbacks(tick); ui.removeCallbacks(motoTick) }
 
     // ------------------------------------------------------------ acciones
     private fun openUrl(u: String) {
@@ -779,6 +862,211 @@ class MainActivity : Activity() {
         requestPermissions(p.toTypedArray(), 1)
     }
 
+    // ------------------------------------------------------------ moto: grabar y ver viajes
+    private var modeSwitch: SwitchRef? = null
+    private var modeUpdating = false
+    private lateinit var motoModeInfo: TextView
+    private lateinit var motoGauge: LeanGaugeView
+    private lateinit var motoStatus: TextView
+    private lateinit var motoButton: Button
+    private lateinit var motoTripsCard: LinearLayout
+    private lateinit var motoTripList: LinearLayout
+    private val motoVals = HashMap<String, TextView>()
+    private var pendingTrip: TripSummary? = null
+    private var pendingFmt = "gpx"
+    private val motoTick = object : Runnable {
+        override fun run() { refreshMotoLive(); ui.postDelayed(this, 250) }
+    }
+
+    private fun fmtDuration(ms: Long): String {
+        val m = ms / 60_000; return if (m >= 60) "${m / 60} h ${m % 60} min" else "$m min"
+    }
+
+    private fun refreshMotoLive() {
+        val l = MotoRecorder.live()
+        val a = l.recording || l.modeOn                               // hay sensores en marcha (grabando y/o modo moto)
+        motoGauge.set(a, l.leanDeg, l.leanValid, l.maxLeft, l.maxRight)
+        fun put(k: String, v: String) { motoVals[k]?.setIfChanged(v) }
+        put("speed", if (a) "%.0f km/h".format(Locale.getDefault(), l.speedKmh) else "—")
+        put("dist", if (l.recording) "%.1f km".format(Locale.getDefault(), l.distanceM / 1000.0) else "—")
+        put("left", if (a && l.hasLean) "◄ %.0f°".format(Locale.getDefault(), l.maxLeft) else "—")
+        put("right", if (a && l.hasLean) "%.0f° ►".format(Locale.getDefault(), l.maxRight) else "—")
+        put("latg", if (a && l.hasLean) "%.2f g".format(Locale.getDefault(), l.latG) else "—")
+        put("long", if (a) "%+.2f g".format(Locale.getDefault(), l.longG) else "—")
+        put("time", if (l.recording) fmtDuration(l.elapsedMs) else "—")
+        put("curves", if (l.recording && l.hasLean) l.curves.toString() else "—")
+        motoStatus.setIfChanged(when {
+            !a -> "Listo. Activa el modo moto o pulsa «Iniciar grabación» al empezar la ruta."
+            !l.hasLean -> "Midiendo (este móvil no tiene giroscopio: sin inclinación)"
+            l.gpsAgeMs > 5000 -> "Esperando señal GPS…"
+            l.recording -> "● Grabando el viaje"
+            else -> "Modo moto activo"
+        })
+        // interruptor del modo moto: refleja el estado real (se apaga solo si el ESP32 se desconecta)
+        modeSwitch?.let { ms ->
+            if (ms.sw.isChecked != l.modeOn) { modeUpdating = true; ms.sw.isChecked = l.modeOn; modeUpdating = false }
+        }
+        motoModeInfo.setIfChanged(
+            if (l.modeOn) (if (l.modeLeft < 1 && l.modeRight < 1) "Activo · aún sin inclinación registrada"
+                else "Máx. desde que lo activaste: ◄ %.0f°  ·  %.0f° ►".format(Locale.getDefault(), l.modeLeft, l.modeRight))
+            else "Desactivado")
+        val txt = if (l.recording) "Parar y guardar viaje" else "Iniciar grabación"
+        if (motoButton.text.toString() != txt) {
+            motoButton.text = txt
+            motoButton.background = ripple(rounded(col(if (l.recording) R.color.bad else R.color.primary), 14))
+        }
+    }
+
+    private fun toggleRecording() {
+        if (MotoRecorder.recording) {
+            MotoRecorder.stopRecording { s ->
+                Toast.makeText(this,
+                    if (s != null) "Viaje guardado: %.1f km".format(Locale.getDefault(), s.distanceM / 1000.0) else "Viaje demasiado corto: no se ha guardado",
+                    Toast.LENGTH_LONG).show()
+                refreshTrips(); refreshMotoLive()
+            }
+        } else {
+            MotoRecorder.startRecording(this)?.let { Toast.makeText(this, it, Toast.LENGTH_LONG).show() }
+        }
+        refreshMotoLive()
+    }
+
+    private fun refreshTrips() {
+        Thread {
+            val list = runCatching { TripStore(File(filesDir, "trips")).list(MotoRecorder.activeId()) }.getOrDefault(emptyList())
+            runOnUiThread { renderTrips(list) }
+        }.start()
+    }
+
+    private fun renderTrips(list: List<TripSummary>) {
+        (motoTripsCard.getChildAt(0) as? TextView)?.text = "VIAJES GUARDADOS (${list.size})"
+        motoTripList.removeAllViews()
+        if (list.isEmpty()) {
+            motoTripList.addView(label("Aún no hay viajes. Inicia una grabación al empezar tu ruta y aparecerá aquí al pararla.",
+                13f, col(R.color.text_muted)))
+            return
+        }
+        list.take(60).forEachIndexed { i, t ->
+            val row = LinearLayout(this).apply {
+                orientation = LinearLayout.HORIZONTAL; gravity = Gravity.CENTER_VERTICAL
+                setPadding(0, dp(8), 0, dp(8)); background = ripple(ColorDrawable(Color.TRANSPARENT)); isClickable = true
+                setOnClickListener { tripDialog(t) }
+            }
+            val icon = label(if (t.hasLean) "${maxOf(t.maxLeanLeft, t.maxLeanRight).toInt()}°" else "🏍", 13f, Color.WHITE, true).apply {
+                gravity = Gravity.CENTER; background = circle(col(R.color.primary))
+            }
+            row.addView(icon, LinearLayout.LayoutParams(dp(38), dp(38)))
+            val mid = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL; setPadding(dp(12), 0, dp(8), 0) }
+            mid.addView(label(t.name, 15f, col(R.color.text), true))
+            mid.addView(label("%.1f km · %s%s".format(Locale.getDefault(), t.distanceM / 1000.0, fmtDuration(t.durationMs),
+                if (t.hasLean) " · ◄ ${t.maxLeanLeft.toInt()}°  ${t.maxLeanRight.toInt()}° ►" else ""), 13f, col(R.color.text_muted)))
+            row.addView(mid, lp(w = 0, weight = 1f))
+            row.addView(label("›", 22f, col(R.color.text_muted)))
+            motoTripList.addView(row, lp())
+            if (i < minOf(list.size, 60) - 1) divider(motoTripList)
+        }
+    }
+
+    private fun tripDialog(t: TripSummary) {
+        val loc = Locale.getDefault()
+        val details = buildString {
+            append("Fecha: ").append(SimpleDateFormat("dd/MM/yyyy HH:mm", loc).format(Date(t.startMs))).append('\n')
+            append("Distancia: %.1f km\n".format(loc, t.distanceM / 1000.0))
+            append("Duración: ${fmtDuration(t.durationMs)} (en movimiento ${fmtDuration(t.movingMs)})\n")
+            append("Velocidad máx: %.0f km/h · media en movimiento %.0f km/h\n".format(loc, t.maxSpeedMs * 3.6, t.avgMovingSpeedMs * 3.6))
+            if (t.hasLean) {
+                append("Inclinación máx: ◄ %.0f° izquierda · %.0f° derecha ►\n".format(loc, t.maxLeanLeft, t.maxLeanRight))
+                append("G lateral máx: %.2f g · Curvas: ${t.curves}\n".format(loc, t.maxLatG))
+            }
+            append("Aceleración máx: %.2f g · Frenada máx: %.2f g\n".format(loc, t.maxAccelG, t.maxBrakeG))
+            append("Desnivel acumulado: %.0f m\n".format(loc, t.elevGainM))
+            append("Puntos: ${t.points}")
+        }
+        AlertDialog.Builder(this).setTitle(t.name).setMessage(details)
+            .setPositiveButton("Compartir GPX") { _, _ -> shareTrip(t, "gpx") }
+            .setNeutralButton("Más…") { _, _ -> tripMore(t) }
+            .setNegativeButton("Cerrar", null).show()
+    }
+
+    private fun tripMore(t: TripSummary) {
+        AlertDialog.Builder(this).setTitle(t.name)
+            .setItems(arrayOf("Guardar GPX…", "Guardar CSV…", "Compartir CSV", "Renombrar", "Eliminar")) { _, which ->
+                when (which) {
+                    0 -> saveTrip(t, "gpx")
+                    1 -> saveTrip(t, "csv")
+                    2 -> shareTrip(t, "csv")
+                    3 -> renameTrip(t)
+                    4 -> AlertDialog.Builder(this).setMessage("¿Eliminar «${t.name}»? No se puede deshacer.")
+                        .setPositiveButton("Eliminar") { _, _ ->
+                            TripStore(File(filesDir, "trips")).delete(t.id); refreshTrips()
+                        }.setNegativeButton("Cancelar", null).show()
+                }
+            }.setNegativeButton("Cancelar", null).show()
+    }
+
+    private fun renameTrip(t: TripSummary) {
+        val et = EditText(this).apply { setText(t.name); setSingleLine(); setSelection(text.length) }
+        val box = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL; setPadding(dp(20), dp(8), dp(20), dp(8)) }
+        box.addView(et)
+        AlertDialog.Builder(this).setTitle("Nombre del viaje").setView(box)
+            .setPositiveButton("Guardar") { _, _ ->
+                TripStore(File(filesDir, "trips")).rename(t.id, et.text.toString()); refreshTrips()
+            }.setNegativeButton("Cancelar", null).show()
+    }
+
+    private fun writeTripTo(t: TripSummary, fmt: String, out: java.io.OutputStream) {
+        val st = TripStore(File(filesDir, "trips"))
+        if (fmt == "gpx") TripExport.writeGpx(st, t, out) else TripExport.writeCsv(st, t, out)
+    }
+
+    private fun shareTrip(t: TripSummary, fmt: String) {
+        Thread {
+            try {
+                val dir = File(cacheDir, "exports").apply { mkdirs() }
+                val limit = System.currentTimeMillis() - 24 * 3600_000L
+                dir.listFiles()?.forEach { if (it.lastModified() < limit) it.delete() }          // los envíos viejos no se acumulan
+                val f = File(dir, "${t.id}.$fmt")
+                f.outputStream().use { writeTripTo(t, fmt, it) }
+                runOnUiThread {
+                    val uri = FileProvider.getUriForFile(this, "$packageName.fileprovider", f)
+                    val send = Intent(Intent.ACTION_SEND).apply {
+                        type = if (fmt == "gpx") "application/gpx+xml" else "text/csv"
+                        putExtra(Intent.EXTRA_STREAM, uri); putExtra(Intent.EXTRA_SUBJECT, t.name)
+                        addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+                    }
+                    startActivity(Intent.createChooser(send, "Compartir viaje"))
+                }
+            } catch (e: Exception) {
+                AppLog.e("UI", "No se pudo compartir el viaje", e)
+                runOnUiThread { Toast.makeText(this, "No se pudo compartir (${e.message})", Toast.LENGTH_LONG).show() }
+            }
+        }.start()
+    }
+
+    private fun saveTrip(t: TripSummary, fmt: String) {
+        pendingTrip = t; pendingFmt = fmt
+        val safe = t.name.replace(Regex("[^A-Za-z0-9_-]+"), "_").trim('_').ifEmpty { "viaje" }
+        val i = Intent(Intent.ACTION_CREATE_DOCUMENT).apply {
+            addCategory(Intent.CATEGORY_OPENABLE)
+            type = if (fmt == "gpx") "application/gpx+xml" else "text/csv"
+            putExtra(Intent.EXTRA_TITLE, "$safe.$fmt")
+        }
+        try { startActivityForResult(i, REQ_TRIP) }
+        catch (e: Exception) { Toast.makeText(this, "No hay ninguna app para guardar archivos.", Toast.LENGTH_LONG).show() }
+    }
+
+    private fun writeTrip(uri: Uri) {
+        val t = pendingTrip ?: return
+        val fmt = pendingFmt
+        Thread {
+            val msg = try {
+                contentResolver.openOutputStream(uri, "wt")!!.use { writeTripTo(t, fmt, it) }
+                "Viaje guardado (${fmt.uppercase()})"
+            } catch (e: Exception) { "No se pudo guardar el archivo (${e.message})" }
+            runOnUiThread { Toast.makeText(this, msg, Toast.LENGTH_LONG).show() }
+        }.start()
+    }
+
     // ------------------------------------------------------------ exportar / importar configuración
     private var exportSecrets = false
 
@@ -816,6 +1104,7 @@ class MainActivity : Activity() {
         when (requestCode) {
             REQ_EXPORT -> writeConfig(uri)
             REQ_IMPORT -> readConfig(uri)
+            REQ_TRIP -> writeTrip(uri)
         }
     }
 
@@ -927,13 +1216,23 @@ class MainActivity : Activity() {
 
     // ------------------------------------------------------------ pestañas (barra inferior)
     private class TabRef(val root: LinearLayout, val pill: FrameLayout, val glyph: TextView, val label: TextView, val dot: View)
+    private class TabDef(val id: Int, val name: String, val glyph: String)
 
-    private val tabNames = listOf("Inicio", "Navegación", "Lactancia", "Ajustes")
-    private val tabGlyphs = listOf("🏠", "🧭", "🍼", "⚙️")
-    private lateinit var scrolls: List<ScrollView>
+    private val tabDefs = listOf(
+        TabDef(TAB_HOME, "Inicio", "🏠"), TabDef(TAB_NAV, "Navegación", "🧭"), TabDef(TAB_MOTO, "Moto", "🏍️"),
+        TabDef(TAB_LACT, "Lactancia", "🍼"), TabDef(TAB_SETTINGS, "Ajustes", "⚙️")
+    )
+    private lateinit var scrolls: Map<Int, ScrollView>
     private lateinit var setupBanner: LinearLayout
-    private val tabRefs = ArrayList<TabRef>()
+    private val tabRefs = LinkedHashMap<Int, TabRef>()
     private var currentTab = TAB_HOME
+
+    /** Inicio, Navegación y Ajustes siempre; Moto y Lactancia según Ajustes > Pestañas. */
+    private fun tabVisible(id: Int) = when (id) {
+        TAB_MOTO -> Prefs.tabMoto(this)
+        TAB_LACT -> Prefs.tabLact(this)
+        else -> true
+    }
 
     private fun page() = LinearLayout(this).apply {
         orientation = LinearLayout.VERTICAL; setPadding(dp(16), dp(20), dp(16), dp(16))
@@ -952,24 +1251,24 @@ class MainActivity : Activity() {
             setPadding(dp(4), dp(8), dp(4), dp(8))
         }
         tabRefs.clear()
-        for (i in tabNames.indices) {
+        for (def in tabDefs.filter { tabVisible(it.id) }) {
             val tab = LinearLayout(this).apply {
                 orientation = LinearLayout.VERTICAL; gravity = Gravity.CENTER_HORIZONTAL
                 background = ripple(ColorDrawable(Color.TRANSPARENT)); isClickable = true
-                setOnClickListener { showTab(i) }
+                setOnClickListener { showTab(def.id) }
             }
             val pill = FrameLayout(this)
-            val glyph = TextView(this).apply { text = tabGlyphs[i]; setTextSize(TypedValue.COMPLEX_UNIT_SP, 19f); gravity = Gravity.CENTER }
+            val glyph = TextView(this).apply { text = def.glyph; setTextSize(TypedValue.COMPLEX_UNIT_SP, 19f); gravity = Gravity.CENTER }
             pill.addView(glyph, FrameLayout.LayoutParams(MATCH, MATCH, Gravity.CENTER))
             val dot = View(this).apply { background = circle(col(R.color.bad)); visibility = View.GONE }
             pill.addView(dot, FrameLayout.LayoutParams(dp(9), dp(9), Gravity.TOP or Gravity.END).apply {
                 topMargin = dp(3); rightMargin = dp(12)
             })
             tab.addView(pill, LinearLayout.LayoutParams(dp(60), dp(32)))
-            val lbl = label(tabNames[i], 11f, col(R.color.text_muted)).apply { gravity = Gravity.CENTER }
+            val lbl = label(def.name, 11f, col(R.color.text_muted)).apply { gravity = Gravity.CENTER }
             tab.addView(lbl, lp(top = 2))
             bar.addView(tab, lp(w = 0, weight = 1f))
-            tabRefs.add(TabRef(tab, pill, glyph, lbl, dot))
+            tabRefs[def.id] = TabRef(tab, pill, glyph, lbl, dot)
         }
         val wrap = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
         wrap.addView(View(this).apply { setBackgroundColor(col(R.color.stroke)) }, lp(h = 1))
@@ -977,18 +1276,21 @@ class MainActivity : Activity() {
         return wrap
     }
 
-    private fun showTab(i: Int, scrollTo: View? = null) {
-        currentTab = i
-        scrolls.forEachIndexed { k, sv -> sv.visibility = if (k == i) View.VISIBLE else View.GONE }
+    private fun showTab(requested: Int, scrollTo: View? = null) {
+        val id = if (tabVisible(requested)) requested else TAB_HOME      // una pestaña oculta lleva a Inicio
+        currentTab = id
+        scrolls.forEach { (k, sv) -> sv.visibility = if (k == id) View.VISIBLE else View.GONE }
         val tint = (col(R.color.primary) and 0x00FFFFFF) or (0x26 shl 24)
-        tabRefs.forEachIndexed { k, t ->
-            val sel = k == i
+        tabRefs.forEach { (k, t) ->
+            val sel = k == id
             t.pill.background = if (sel) rounded(tint, 16) else null     // "píldora" detrás del icono de la pestaña activa
             t.glyph.alpha = if (sel) 1f else 0.55f
             t.label.setTextColor(col(if (sel) R.color.primary else R.color.text_muted))
             t.label.setTypeface(null, if (sel) Typeface.BOLD else Typeface.NORMAL)
         }
-        if (scrollTo != null) scrolls[i].post { scrolls[i].smoothScrollTo(0, scrollTo.top) }
+        if (scrollTo != null) scrolls[id]?.let { sv -> sv.post { sv.smoothScrollTo(0, scrollTo.top) } }
+        ui.removeCallbacks(motoTick)
+        if (id == TAB_MOTO) { refreshTrips(); ui.post(motoTick) }       // el medidor se actualiza 4 veces por segundo solo si se ve
     }
 
     @Suppress("DEPRECATION", "OVERRIDE_DEPRECATION")
@@ -1009,6 +1311,10 @@ class MainActivity : Activity() {
         ref.sub.setIfChanged(EspConfig.statusText())
         rowLactNet?.sub?.setIfChanged(EspConfig.netSummary())
         rowPair?.sub?.setIfChanged(EspConfig.pairText())
+        hideSwitch?.let { hs ->
+            val want = EspConfig.shownHide()
+            if (hs.sw.isChecked != want) { hideUpdating = true; hs.sw.isChecked = want; hideUpdating = false }
+        }
         lockSwitch?.let { ls ->
             if (ls.sw.isChecked != EspConfig.lockOn()) { lockUpdating = true; ls.sw.isChecked = EspConfig.lockOn(); lockUpdating = false }
             ls.sub.setIfChanged(EspConfig.lockText())

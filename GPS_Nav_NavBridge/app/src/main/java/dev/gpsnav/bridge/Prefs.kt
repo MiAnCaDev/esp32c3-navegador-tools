@@ -46,4 +46,10 @@ object Prefs {
     /** true mientras el usuario quiere el servicio en marcha (false tras pulsar "Parar"). */
     fun wantRunning(ctx: Context) = sp(ctx).getBoolean("want", false)
     fun setWantRunning(ctx: Context, v: Boolean) = sp(ctx).edit().putBoolean("want", v).apply()
+
+    // Pestañas opcionales de la app (Ajustes > Pestañas). Moto: visible por defecto; Lactancia: oculta (solo interesa a quien usa el bot)
+    fun tabMoto(ctx: Context) = sp(ctx).getBoolean("tab_moto", true)
+    fun setTabMoto(ctx: Context, v: Boolean) = sp(ctx).edit().putBoolean("tab_moto", v).apply()
+    fun tabLact(ctx: Context) = sp(ctx).getBoolean("tab_lact", false)
+    fun setTabLact(ctx: Context, v: Boolean) = sp(ctx).edit().putBoolean("tab_lact", v).apply()
 }

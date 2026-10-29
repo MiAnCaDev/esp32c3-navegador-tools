@@ -15,9 +15,10 @@ import java.util.Locale
 /**
  * Exportar / importar TODA la configuración de la app en un archivo .json (por ejemplo, para cambiar de móvil).
  *
- * Incluye: ESP32 elegido, opciones de arranque, destino de la brújula, favoritas, avisos de radar y los ajustes de lactancia
+ * Incluye: ESP32 elegido, opciones de arranque, pestañas visibles, destino de la brújula, favoritas, avisos de radar y los ajustes de lactancia
  * (servidor, intervalo y redes WiFi; las claves y el token solo si el usuario lo decide al exportar).
- * No incluye datos que se pueden volver a obtener (base de radares, caché de límites de velocidad, logs) ni estados
+ * No incluye datos que se pueden volver a obtener (base de radares, caché de límites de velocidad, logs) ni los viajes grabados
+ * (se exportan uno a uno como GPX/CSV desde la pestaña Moto) ni estados
  * temporales (servicio en marcha, último error...). El "habilitado" del modo lactancia vive en el propio ESP32.
  *
  * Importar sustituye solo las secciones que vengan en el archivo; las demás se quedan como están.
@@ -48,6 +49,8 @@ object ConfigBackup {
         o.put("device", if (addr == null) JSONObject.NULL
             else JSONObject().put("address", addr).put("name", Prefs.deviceName(ctx) ?: ""))
         o.put("startup", JSONObject().put("autoStartBoot", Prefs.autoStartBoot(ctx)).put("autoRestart", Prefs.autoRestart(ctx)))
+
+        o.put("tabs", JSONObject().put("moto", Prefs.tabMoto(ctx)).put("lactancia", Prefs.tabLact(ctx)))
 
         val d = Destination.current
         o.put("destination", if (d == null) JSONObject.NULL
@@ -138,6 +141,14 @@ object ConfigBackup {
             if (ctx != null) {
                 if (s.has("autoStartBoot")) Prefs.setAutoStartBoot(ctx, s.optBoolean("autoStartBoot", true))
                 if (s.has("autoRestart")) Prefs.setAutoRestart(ctx, s.optBoolean("autoRestart", true))
+            }
+        }
+
+        o.optJSONObject("tabs")?.let { t ->
+            lines.add("Pestañas visibles")
+            if (ctx != null) {
+                if (t.has("moto")) Prefs.setTabMoto(ctx, t.optBoolean("moto", true))
+                if (t.has("lactancia")) Prefs.setTabLact(ctx, t.optBoolean("lactancia", false))
             }
         }
 

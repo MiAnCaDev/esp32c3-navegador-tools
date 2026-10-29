@@ -32,6 +32,7 @@ import dev.gpsnav.bridge.ble.BleLink
 import dev.gpsnav.bridge.notif.HandlerRegistry
 import dev.gpsnav.bridge.notif.NavNotificationListener
 import dev.gpsnav.bridge.protocol.Frame
+import dev.gpsnav.bridge.moto.MotoRecorder
 import dev.gpsnav.bridge.radar.RadarMonitor
 import org.json.JSONObject
 
@@ -65,6 +66,7 @@ class BridgeService : Service() {
     // El ESP32 da por caducado el destino a los 6 s y la velocidad a los 12 s: los "sigo aquí" van por debajo.
     private val destThrottle = Throttle(3_000)
     private val gpsThrottle = Throttle(5_000)
+    private val motoThrottle = Throttle(3_000)        // el ESP32 oculta el modo moto a los 8 s sin mensajes
     private var wasReady = false
     private var notReadySince = 0L
 
@@ -73,14 +75,23 @@ class BridgeService : Service() {
             val now = SystemClock.elapsedRealtime()
             val ready = BridgeHub.link?.ready == true
             if (ready && !wasReady) {                       // (re)conexión: el ESP32 necesita el estado completo ya
-                destThrottle.reset(); gpsThrottle.reset()
+                destThrottle.reset(); gpsThrottle.reset(); motoThrottle.reset()
                 startLocationIfPossible()
                 EspConfig.onLinkReady()                     // pregunta los ajustes del ESP32 y reenvía lo pendiente
             }
             // El GPS es lo que más batería gasta: si el ESP32 lleva 30 s sin conexión (apagado, modo lactancia...) se pausa
             if (ready) notReadySince = 0L
             else if (notReadySince == 0L) notReadySince = now
-            else if (lm != null && now - notReadySince > GPS_IDLE_MS) stopLocation()
+            else if (lm != null && !MotoRecorder.active && now - notReadySince > GPS_IDLE_MS) stopLocation()   // grabando un viaje, el GPS no se pausa
+            // Modo moto: si el ESP32 se desconecta se desactiva y hay que volver a activarlo a mano
+            if (!ready && wasReady && MotoRecorder.modeOn) {
+                AppLog.i("Service", "ESP32 desconectado: modo moto desactivado")
+                MotoRecorder.setMode(this@BridgeService, false)
+            }
+            if (ready && MotoRecorder.modeOn) {
+                val o = JSONObject().put("t", "moto").put("on", 1).put("txt", MotoRecorder.modeText())
+                if (motoThrottle.shouldSend(o.toString())) BridgeHub.sink.send(Frame.json(o))
+            }
             wasReady = ready
 
             if (ready) {
@@ -95,6 +106,7 @@ class BridgeService : Service() {
         override fun onLocationChanged(loc: Location) {
             Destination.onLocation(loc)
             RadarMonitor.onLocation(loc)              // avisos de radar (cálculo en el móvil)
+            MotoRecorder.onLocation(loc)              // grabación del viaje en moto (si está activa)
             if (!loc.hasSpeed()) return
             val kmh = Math.round(loc.speed * 3.6f)
             BridgeHub.lastSpeed = "$kmh km/h"
@@ -272,6 +284,7 @@ class BridgeService : Service() {
     override fun onDestroy() {
         AppLog.i("Service", "onDestroy (wantRunning=${Prefs.wantRunning(this)}, startFailed=$startFailed)")
         destHandler.removeCallbacks(destTick)
+        MotoRecorder.stopAll()                    // si se estaba grabando un viaje, se cierra y se guarda; el modo moto se desactiva
         link?.stop(); link = null; BridgeHub.link = null
         lm?.removeUpdates(locListener); lm = null
         BridgeHub.bleStatus = "Parado"

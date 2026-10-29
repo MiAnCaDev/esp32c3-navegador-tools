@@ -976,6 +976,15 @@ lv_obj_t *radarDist  = nullptr;      // metros / km (pequeño; solo si la app ma
 lv_obj_t *radarOvrBar = nullptr;     // barra vertical en el borde DERECHO: aviso de exceso de velocidad
 bool      radarOverspeed = false;    // la app dice que vas por encima del limite
 int       radarScrW = 240, radarScrH = 280;   // tamano actual de pantalla (lo fija applyLayout)
+// --- Modo moto: la app manda la inclinacion maxima y aqui solo se dibuja ---
+lv_obj_t *motoChip    = nullptr;     // "MOTO 47 IZQ": inclinacion maxima desde que se activo el modo moto en la app
+bool      motoShown   = false;
+unsigned long lastMotoMillis = 0;    // si pasan >8 s sin mensajes (o se pierde el Bluetooth) se oculta sola
+#define MOTO_STALE_MS 8000
+// --- Boton de lactancia oculto: en su lugar, indicador de Bluetooth ---
+lv_obj_t *btInd       = nullptr;     // recuadro "BT": azul = movil conectado, gris = sin conexion
+lv_obj_t *btIndLbl    = nullptr;
+int       btIndState  = -1;
 lv_obj_t *pairBox     = nullptr;     // cuadro con el codigo de emparejamiento del movil
 lv_obj_t *pairCodeLbl = nullptr;
 uint32_t  pairHideAt  = 0;           // millis() a partir del cual se oculta solo (0 = oculto)
@@ -1502,6 +1511,8 @@ void applyLayout()
   lv_obj_align(radarIdleChip, LV_ALIGN_TOP_RIGHT, -(RADAR_BAR_RED_W + 4), 4);   // a la izquierda de la linea roja
   radarScrW = W;
   radarScrH = H;
+  lv_obj_align(btInd, LV_ALIGN_TOP_LEFT, 10, 11);                       // centrado en la zona tactil (52x44) del boton de lactancia
+  lv_obj_align(motoChip, LV_ALIGN_TOP_LEFT, FREE_X + 4, (H > W) ? 30 : 4);   // esquina superior izquierda de la zona libre
   radarUpdateOverspeedBar();                           // recoloca la barra del borde derecho (cambia con el giro)
 }
 
@@ -1569,6 +1580,35 @@ void buildUI()
   lv_obj_set_style_pad_all(toastLabel, 6, 0);
   lv_obj_align(toastLabel, LV_ALIGN_CENTER, 0, 0);
   lv_obj_add_flag(toastLabel, LV_OBJ_FLAG_HIDDEN);
+
+  // --- Indicador de Bluetooth (ocupa el sitio del boton de lactancia cuando este se oculta) ---
+  btInd = lv_obj_create(scr);
+  lv_obj_remove_style_all(btInd);
+  lv_obj_set_size(btInd, 36, 26);
+  lv_obj_set_style_bg_opa(btInd, LV_OPA_COVER, 0);
+  lv_obj_set_style_radius(btInd, 8, 0);
+  lv_obj_clear_flag(btInd, LV_OBJ_FLAG_CLICKABLE);
+  lv_obj_clear_flag(btInd, LV_OBJ_FLAG_SCROLLABLE);
+  btIndLbl = lv_label_create(btInd);
+  lv_label_set_text(btIndLbl, "BT");
+  lv_obj_set_style_text_font(btIndLbl, &lv_font_montserrat_14, 0);
+  lv_obj_center(btIndLbl);
+  lv_obj_add_flag(btInd, LV_OBJ_FLAG_HIDDEN);
+
+  // --- Inclinacion maxima del modo moto (esquina superior izquierda de la zona libre) ---
+  motoChip = lv_label_create(scr);
+  lv_label_set_text(motoChip, "");
+  lv_obj_clear_flag(motoChip, LV_OBJ_FLAG_CLICKABLE);
+  lv_obj_set_style_text_font(motoChip, &lv_font_montserrat_14, 0);
+  lv_obj_set_style_text_color(motoChip, lv_color_white(), 0);
+  lv_obj_set_style_bg_color(motoChip, lv_color_make(0, 120, 90), 0);
+  lv_obj_set_style_bg_opa(motoChip, LV_OPA_COVER, 0);
+  lv_obj_set_style_radius(motoChip, 8, 0);
+  lv_obj_set_style_pad_left(motoChip, 8, 0);
+  lv_obj_set_style_pad_right(motoChip, 8, 0);
+  lv_obj_set_style_pad_top(motoChip, 3, 0);
+  lv_obj_set_style_pad_bottom(motoChip, 3, 0);
+  lv_obj_add_flag(motoChip, LV_OBJ_FLAG_HIDDEN);
 
   // --- Alerta roja de radar (por encima de todo, salvo la capa de brillo) ---
   radarCont = lv_obj_create(scr);
@@ -1958,6 +1998,56 @@ void cfgSendStatus(const char *note, int mine)
 #endif
 }
 
+// ---- Boton de lactancia / indicador de Bluetooth -----------------------------------------------------------------
+// El boton se muestra si la lactancia esta habilitada, o si el usuario no ha pedido ocultarlo desde la app.
+// Si esta deshabilitada Y se ha pedido ocultarlo, en su sitio sale un indicador de si el movil esta conectado por Bluetooth.
+void updateBtIndicator(bool force)
+{
+  if (!btInd) return;
+  const int st = bleClientConnected ? 1 : 0;
+  if (!force && st == btIndState) return;
+  btIndState = st;
+  lv_obj_set_style_bg_color(btInd, st ? lv_color_make(0, 110, 230) : lv_color_make(60, 60, 70), 0);
+  lv_obj_set_style_text_color(btIndLbl, st ? lv_color_white() : lv_color_make(140, 140, 150), 0);
+}
+
+void applyAppBtnState()
+{
+  if (!appBtn || !btInd) return;
+  const bool showBtn = appMode || lactEnabled || !cfgHideBtn;
+  if (showBtn) {
+    lv_obj_clear_flag(appBtn, LV_OBJ_FLAG_HIDDEN);
+    lv_obj_add_flag(btInd, LV_OBJ_FLAG_HIDDEN);
+  } else {
+    lv_obj_add_flag(appBtn, LV_OBJ_FLAG_HIDDEN);
+    lv_obj_clear_flag(btInd, LV_OBJ_FLAG_HIDDEN);
+    updateBtIndicator(true);
+  }
+}
+
+void cfgApplied() { applyAppBtnState(); }          // declarada en DeviceConfig.h
+
+// ---- Modo moto: {"t":"moto","on":1,"txt":"MOTO 47 IZQ"}  /  {"t":"moto","on":0} -----------------------------------
+void motoHide()
+{
+  if (!motoShown) return;
+  motoShown = false;
+  lv_obj_add_flag(motoChip, LV_OBJ_FLAG_HIDDEN);
+}
+
+void handleMotoJson(JsonDocument &doc)
+{
+  if (appMode) return;
+  if (!((int)(doc["on"] | 0))) { motoHide(); return; }
+  lastMotoMillis = millis();
+  if (lastMotoMillis == 0) lastMotoMillis = 1;
+  lv_label_set_text(motoChip, (const char *)(doc["txt"] | "MOTO"));
+  if (!motoShown) {
+    motoShown = true;
+    lv_obj_clear_flag(motoChip, LV_OBJ_FLAG_HIDDEN);
+  }
+}
+
 // Codigo de emparejamiento: cuadro en el centro de la pantalla durante 90 s (tocarlo lo cierra)
 void cfgShowPairCode(const char *code)
 {
@@ -2019,6 +2109,8 @@ void processLine(String line)
     handleDestJson(doc);
   } else if (strcmp(t, "radar") == 0) {
     handleRadarJson(doc);
+  } else if (strcmp(t, "moto") == 0) {
+    handleMotoJson(doc);
   } else if (strcmp(t, "cfg") == 0) {
     cfgHandleJson(doc);                 // ajustes que manda la app (lactancia, WiFi, API...): ver DeviceConfig.h
   } else {
@@ -2308,6 +2400,7 @@ void setup()
   applyBrightness();
   Serial.println("[CP7] buildUI OK");
 
+  applyAppBtnState();                 // boton de lactancia o indicador de Bluetooth, segun lo guardado
   if (cfgBootLact) {
     // Modo lactancia: el Bluetooth ni se enciende, toda la memoria queda para WiFi + TLS
     Serial.println("[BOOT] modo LACTANCIA (Bluetooth apagado)");
@@ -2370,6 +2463,8 @@ void loop()
   // Seguridad: si el movil deja de mandar mensajes de radar (se cae, sale de rango...), la alerta se quita sola
   if (pairHideAt != 0 && (int32_t)(millis() - pairHideAt) > 0) cfgHidePairCode();   // el codigo caduca a los 90 s
   cfgTick();                                                                          // caducidad de codigo/bloqueo de emparejamiento
+  if (motoShown && (!bleClientConnected || millis() - lastMotoMillis > MOTO_STALE_MS)) motoHide();   // sin movil, no hay modo moto
+  if (btInd && !lv_obj_has_flag(btInd, LV_OBJ_FLAG_HIDDEN)) updateBtIndicator(false);                // azul/gris segun la conexion
   if ((radarShown || radarOverspeed || radarIdleDist >= 0) && millis() - lastRadarMillis > RADAR_STALE_MS) {
     radarDismissed = 0;
     radarHide();

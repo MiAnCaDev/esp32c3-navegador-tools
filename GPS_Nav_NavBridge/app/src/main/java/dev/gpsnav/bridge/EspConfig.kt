@@ -49,6 +49,8 @@ object EspConfig {
         private set
     @Volatile var espLock = -1            // -1 = no sabemos · 0 = abierto · 1 = bloqueado (solo móviles emparejados)
         private set
+    @Volatile var espHide = -1            // -1 = no sabemos · 0 = el botón de lactancia se muestra siempre · 1 = se oculta si la lactancia está deshabilitada
+        private set
     @Volatile var espKeys = 0             // móviles emparejados
         private set
     @Volatile var espMine = -1            // la clave de ESTE móvil vale (solo importa con el bloqueo activo)
@@ -103,6 +105,17 @@ object EspConfig {
     fun needsPairing() = espLock == 1 && (!hasKey() || espMine == 0)
 
     fun lockOn() = espLock == 1
+
+    /** -1 = nada pendiente; 0/1 = valor que falta por confirmar en el ESP32 (ocultar el botón de lactancia). */
+    fun pendingHide(): Int = sp().getInt("lc_hide_pending", -1)
+
+    /** Lo que mostrar en el interruptor: lo pendiente, si no lo último que dijo el ESP32, si no lo último conocido. */
+    fun shownHide(): Boolean {
+        val p = pendingHide()
+        if (p >= 0) return p == 1
+        if (espHide >= 0) return espHide == 1
+        return sp().getBoolean("lc_hide_known", false)
+    }
 
     /** Para restaurar una copia de seguridad en otro móvil (la clave solo se exporta si el usuario incluye las claves). */
     fun exportKey(): String = key()
@@ -160,6 +173,18 @@ object EspConfig {
         return null
     }
 
+    /**
+     * Oculta (true) o muestra (false) el botón de lactancia del ESP32 cuando la lactancia está deshabilitada. Con el botón oculto,
+     * en su sitio el ESP32 enseña si el móvil está conectado por Bluetooth. Devuelve un texto para el usuario.
+     */
+    fun requestHideBtn(hide: Boolean): String {
+        sp().edit().putInt("lc_hide_pending", if (hide) 1 else 0).putBoolean("lc_hide_known", hide).apply()
+        if (!ready()) return "Guardado. Se enviará cuando el ESP32 se conecte."
+        if (needsPairing()) { needPair = true; return "El ESP32 está bloqueado: primero hay que emparejar este móvil (código en su pantalla)." }
+        send(cfg().put("hidebtn", if (hide) 1 else 0)); send(cfg().put("get", 1))
+        return if (hide) "Enviado: el botón se oculta mientras la lactancia esté deshabilitada." else "Enviado: el botón se mostrará siempre."
+    }
+
     /** Quita el bloqueo (el ESP32 vuelve a obedecer a cualquier móvil y olvida las claves). Texto para el usuario. */
     fun requestUnlock(): String {
         if (!ready()) return "Conecta el ESP32 para cambiar esto."
@@ -199,6 +224,8 @@ object EspConfig {
         send(cfg().put("get", 1))
         val p = pendingLact()
         if (p >= 0 && !needsPairing()) send(cfg().put("lact", p))
+        val h = pendingHide()
+        if (h >= 0 && !needsPairing()) send(cfg().put("hidebtn", h))
     }
 
     /** Llamado desde BleLink (hilo de Bluetooth) con lo que notifica el ESP32. */
@@ -221,6 +248,13 @@ object EspConfig {
         espLock = o.optInt("lock", espLock)
         espKeys = o.optInt("keys", espKeys)
         espMine = o.optInt("mine", espMine)
+        espHide = o.optInt("hide", espHide)
+        if (espHide >= 0) {
+            val p = sp()
+            val e = p.edit().putBoolean("lc_hide_known", espHide == 1)
+            if (p.getInt("lc_hide_pending", -1) == espHide) e.putInt("lc_hide_pending", -1)     // confirmado
+            e.apply()
+        }
         val note = o.optString("note", "")
         when (note) {
             "wrongcode" -> { pendingKey = null; pairMsg = "Código incorrecto. Si fallas 3 veces hay que esperar un minuto." }
