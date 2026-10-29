@@ -70,6 +70,4 @@ Estas variables están disponibles en el esp32 con conexión con app propia. No 
 
 ## Imagenes ESP32
 
-![Imagen del dispositivo](Informacion%20adicional/Esp32%20-%202.avif)
-
-![Imagen del dispositivo - Esquema](Informacion%20adicional/Esp32%20-%201.avif)
+<img src="Informacion%20adicional/Esp32%20-%202.avif" alt="Imagen del dispositivo" width="400"><img src="Informacion%20adicional/Esp32%20-%201.avif" alt="Imagen del dispositivo - Esquema" width="400">
