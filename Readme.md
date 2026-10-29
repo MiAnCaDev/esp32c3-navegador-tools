@@ -1,8 +1,6 @@
-# 🍼 Proyecto de Lactancia y Navegación ESP32
+# Navegación ESP32
 
 Bienvenido al repositorio del proyecto. Aquí encontrarás las herramientas de software y la configuración necesarias para la pantalla y el bot de asistencia.
-
-La parte del bot de Lactancia es algo mas personal e individualizado, no afecta si solo quieres usar la parte de GPS pero está separado y se puede quitar o, si usas la app propia, desactivar y ocultar desde la app.
 
 Placa de desarrollo ESP32-C3 con pantalla ST7789 de 1.69 pulgadas (Imágenes al final del Readme.md)
 
@@ -12,6 +10,8 @@ La versión con app propia GPS_Nav_NavBridge: Se puede utilizar como GPS o como 
 
 ## 🤖 Enlaces de Interés
 * **Bot de Lactancia:** [@lactancia_bot](https://t.me/lactancia_bot)
+
+La parte del bot de Lactancia es algo mas personal e individualizado, no afecta si solo quieres usar la parte de GPS pero está separado y se puede quitar o, si usas la app propia, desactivar y ocultar desde la app.
 
 ---
 
