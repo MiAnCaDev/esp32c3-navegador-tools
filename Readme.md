@@ -2,9 +2,11 @@
 
 Bienvenido al repositorio del proyecto. Aquí encontrarás las herramientas de software y la configuración necesarias para la pantalla y el bot de asistencia.
 
-La parte del bot de Lactancia es algo mas personal e individualizado, no afecta si solo quieres usar la parte de GPS pero está separado y se puede quitar.
+La parte del bot de Lactancia es algo mas personal e individualizado, no afecta si solo quieres usar la parte de GPS pero está separado y se puede quitar o, si usas la app propia, desactivar y ocultar desde la app.
 
 Placa de desarrollo ESP32-C3 con pantalla ST7789 de 1.69 pulgadas (Imágenes al final del Readme.md)
+
+Se puede utilizar como GPS o como brújula. Además tiene un modo moto para guardar tus rutas y obtener datos de las mismas, como la inclinación.
 
 ---
 
