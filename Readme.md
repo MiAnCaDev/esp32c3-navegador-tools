@@ -1,15 +1,17 @@
-# 🍼 Proyecto de Lactancia y Navegación ESP32
+# Navegación ESP32
 
 Bienvenido al repositorio del proyecto. Aquí encontrarás las herramientas de software y la configuración necesarias para la pantalla y el bot de asistencia.
 
-La parte del bot de Lactancia es algo mas personal e individualizado, no afecta si solo quieres usar la parte de GPS pero está separado y se puede quitar.
-
 Placa de desarrollo ESP32-C3 con pantalla ST7789 de 1.69 pulgadas (Imágenes al final del Readme.md)
+
+La versión con app propia GPS_Nav_NavBridge: Se puede utilizar como GPS o como brújula. Además tiene un modo moto para guardar tus rutas y obtener datos de las mismas, como la inclinación.
 
 ---
 
 ## 🤖 Enlaces de Interés
 * **Bot de Lactancia:** [@lactancia_bot](https://t.me/lactancia_bot)
+
+La parte del bot de Lactancia es algo mas personal e individualizado, no afecta si solo quieres usar la parte de GPS pero está separado y se puede quitar o, si usas la app propia, desactivar y ocultar desde la app.
 
 ---
 
@@ -20,7 +22,7 @@ El proyecto se divide en las siguientes carpetas y componentes principales:
 | Carpeta / Componente | Descripción |
 | :--- | :--- |
 | **`GPS_Nav_Display`** | Versión que utiliza la aplicación de terceros **GadgetBridge** para enviar los datos de Google Maps. |
-| **`GPS_Nav_NavBridge`** | Versión con aplicación propia desarrollada para el proyecto. ¡Puedes descargar el APK directamente! |
+| **`GPS_Nav_NavBridge`** | Versión con aplicación propia desarrollada para el proyecto. ¡Puedes descargar el APK directamente [aquí](https://github.com/MiAnCaDev/esp32c3-navegador-tools/tree/main/GPS_Nav_NavBridge/apk)! |
 | **`Informacion adicional`** | Documentación, imágenes y guías de configuración del hardware y software. |
 | **`prueba_colores`** | Script de prueba para verificar la correcta visualización de colores en la pantalla. |
 | **`prueba_tactil`** | Script de prueba para comprobar el funcionamiento del panel táctil. |
@@ -68,6 +70,4 @@ Estas variables están disponibles en el esp32 con conexión con app propia. No 
 
 ## Imagenes ESP32
 
-![Imagen del dispositivo](Informacion%20adicional/Esp32%20-%202.avif)
-
-![Imagen del dispositivo - Esquema](Informacion%20adicional/Esp32%20-%201.avif)
+<img src="Informacion%20adicional/Esp32%20-%202.avif" alt="Imagen del dispositivo" width="400"><img src="Informacion%20adicional/Esp32%20-%201.avif" alt="Imagen del dispositivo - Esquema" width="400">
