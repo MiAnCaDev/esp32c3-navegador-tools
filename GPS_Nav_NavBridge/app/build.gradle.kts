@@ -20,4 +20,7 @@ android {
 }
 dependencies {
     implementation("androidx.core:core-ktx:1.13.1")
+
+    // Tests unitarios (app/src/test): ./gradlew :app:testDebugUnitTest  (o botón derecho > Run en Android Studio)
+    testImplementation("junit:junit:4.13.2")
 }

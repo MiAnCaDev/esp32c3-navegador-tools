@@ -1,0 +1,39 @@
+ÚLTIMA EJECUCIÓN DE LOS TESTS — 2026-10-29 18:20
+
+##### Firmware (tests/run_tests.sh esp32, g++ 13 en Linux)
+=== firmware: DeviceConfig.h (ajustes, emparejamiento, bloqueo) ===
+
+TODO OK (0 fallos)
+49 comprobaciones correctas
+
+=== firmware: PhoneLink.h (parser de tramas Bluetooth, fuzzing) ===
+(compilado con AddressSanitizer + UBSan)
+tramas validas troceadas: 200 de 200 recibidas
+fuzz terminado sin fallos (json=200, iconos=2000)
+
+TODOS LOS TESTS OK
+
+##### App (tests JUnit de app/src/test)
+Nota: aquí no había Gradle/SDK de Android con red, así que se ejecutaron con un mini-ejecutor de JUnit compilando el mismo código de los tests
+(el resultado es el de las mismas 18 pruebas; la primera vez, lánzalas tú con ./gradlew :app:testDebugUnitTest).
+
+  OK    LeanEstimatorTest.belowMinimumSpeed_isInvalidAndZero
+  OK    LeanEstimatorTest.learningTheBiasOnStraightsHelps
+  OK    LeanEstimatorTest.leftIsPositive_rightIsNegative
+  OK    LeanEstimatorTest.noiseFree_theMathIsExact
+  OK    LeanEstimatorTest.withRealisticNoise_errorStaysSmall_forAnyPhoneOrientation
+  OK    CurveDetectorTest.sCurve_isTwoCurves_wobbleAndLaneChangeAreIgnored
+  OK    CurveDetectorTest.straightRiding_producesNoCurves
+  OK    SustainedLeanTest.invalidData_neverCounts
+  OK    SustainedLeanTest.matchesTheExpectedValueOnRandomData
+  OK    SustainedLeanTest.shortSpike_isIgnored
+  OK    SustainedLeanTest.sustainedLean_isCounted_withItsSign
+  OK    TripStoreTest.activeTripIsNotTouched
+  OK    TripStoreTest.csv_hasAllRowsAndColumns
+  OK    TripStoreTest.distanceIgnoresGpsJitterWhileStopped
+  OK    TripStoreTest.emptyTripIsDiscarded_deleteWorks
+  OK    TripStoreTest.gpx_isWellFormedXml_withCurvesAsWaypointsBeforeTheTrack
+  OK    TripStoreTest.metaPersists_renameSanitizesTheName
+  OK    TripStoreTest.tripWithoutMeta_isRebuiltWithCorrectStatistics
+
+18 correctos, 0 fallos

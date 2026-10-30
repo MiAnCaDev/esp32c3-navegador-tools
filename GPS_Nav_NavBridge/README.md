@@ -144,6 +144,11 @@ El resumen de la descarga ahora dice el motivo por dirección (`DGT falló (nap.
 XML no se reconoce, el log guarda las etiquetas vistas y el inicio del archivo (`W/Radar: DGT ...: respuesta sin radares
 reconocibles`) para poder ajustar el lector. Overpass (OpenStreetMap) se consulta en tres espejos por si uno está saturado.
 
+## Tests
+`tests/` contiene las pruebas automáticas (firmware en C++ que se ejecuta en el PC, y tests JUnit de la app). Se lanzan con
+`tests/run_tests.sh` o `tests\run_tests.bat` (o `./gradlew :app:testDebugUnitTest` para la parte de la app). Qué cubre cada una, cómo
+lanzarlas y qué NO cubren: `tests/README.md`; resultado de la última ejecución: `tests/ULTIMA_EJECUCION.txt`.
+
 ## Rendimiento y consumo
 **App**
 - `AppLog` escribe en bloque (cada ~1,5 s) desde un hilo propio en vez de abrir el fichero en cada línea; avisos y errores al instante.
